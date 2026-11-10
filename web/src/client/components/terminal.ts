@@ -6,6 +6,7 @@
  * @fires terminal-ready - When terminal is initialized and ready
  * @fires terminal-input - When user types (detail: { text: string })
  * @fires terminal-resize - When terminal is resized (detail: { cols: number, rows: number, source: string })
+ * @fires terminal-tap - When a touch gesture qualifies as a tap (not a scroll/drag/long-press)
  */
 
 import { FitAddon, Ghostty, Terminal as GhosttyTerminal } from 'ghostty-web';
@@ -19,6 +20,11 @@ import { TERMINAL_THEMES, type TerminalThemeId } from '../utils/terminal-themes.
 import { getCurrentTheme } from '../utils/theme-utils.js';
 
 const logger = createLogger('terminal');
+
+// Tap-vs-scroll gesture thresholds, tuned for iOS Safari's synthetic click after touchend.
+const TAP_MAX_MOVEMENT_PX = 10;
+const TAP_MAX_DURATION_MS = 350;
+const TAP_CLICK_SUPPRESS_MS = 700;
 
 let ghosttyPromise: Promise<Ghostty> | null = null;
 async function ensureGhostty(): Promise<Ghostty> {
@@ -70,6 +76,9 @@ export class Terminal extends LitElement {
   private lastTouchY = 0;
   private touchScrollRemainder = 0;
   private touchScrolling = false;
+  private touchStartTime = 0;
+  private touchSingleThroughout = true;
+  private suppressClickUntil = 0;
 
   private lastCols = 0;
   private lastRows = 0;
@@ -289,6 +298,8 @@ export class Terminal extends LitElement {
   private handleTerminalTouchStart = (event: TouchEvent) => {
     if (event.touches.length !== 1) {
       this.resetTouchScroll();
+      // A second finger joining mid-gesture (e.g. pinch) disqualifies the whole gesture as a tap.
+      this.touchSingleThroughout = false;
       return;
     }
 
@@ -298,6 +309,8 @@ export class Terminal extends LitElement {
     this.lastTouchY = touch.clientY;
     this.touchScrollRemainder = 0;
     this.touchScrolling = false;
+    this.touchStartTime = performance.now();
+    this.touchSingleThroughout = true;
   };
 
   private handleTerminalTouchMove = (event: TouchEvent) => {
@@ -333,6 +346,42 @@ export class Terminal extends LitElement {
     this.touchScrollRemainder = 0;
   };
 
+  /**
+   * Classifies the just-finished gesture as a tap or not, then either dispatches
+   * `terminal-tap` or arms a suppression window so the synthetic click Safari fires
+   * after touchend is ignored. Never calls preventDefault(): the document-level
+   * swipe-back handler depends on seeing an unsuppressed touchend.
+   */
+  private handleTerminalTouchEnd = (event: TouchEvent) => {
+    const wasScrolling = this.touchScrolling;
+    const singleThroughout = this.touchSingleThroughout;
+    const duration = performance.now() - this.touchStartTime;
+    const touch = event.changedTouches[0];
+    const movement = touch
+      ? Math.max(
+          Math.abs(touch.clientX - this.touchStartX),
+          Math.abs(touch.clientY - this.touchStartY)
+        )
+      : Number.POSITIVE_INFINITY;
+
+    this.resetTouchScroll();
+
+    const isTap =
+      singleThroughout &&
+      !wasScrolling &&
+      movement <= TAP_MAX_MOVEMENT_PX &&
+      duration <= TAP_MAX_DURATION_MS;
+
+    if (isTap) {
+      // Dispatch from the real touch target so composedPath() still carries it
+      // (e.g. link-detection in session-view relies on seeing the tapped element).
+      const dispatchTarget = (event.target as EventTarget | null) ?? this;
+      dispatchTarget.dispatchEvent(new CustomEvent('terminal-tap', { bubbles: true }));
+    } else {
+      this.suppressClickUntil = performance.now() + TAP_CLICK_SUPPRESS_MS;
+    }
+  };
+
   private attachTouchScrollHandlers() {
     this.container?.addEventListener('touchstart', this.handleTerminalTouchStart, {
       passive: true,
@@ -340,14 +389,14 @@ export class Terminal extends LitElement {
     this.container?.addEventListener('touchmove', this.handleTerminalTouchMove, {
       passive: false,
     });
-    this.container?.addEventListener('touchend', this.resetTouchScroll, { passive: true });
+    this.container?.addEventListener('touchend', this.handleTerminalTouchEnd, { passive: true });
     this.container?.addEventListener('touchcancel', this.resetTouchScroll, { passive: true });
   }
 
   private detachTouchScrollHandlers() {
     this.container?.removeEventListener('touchstart', this.handleTerminalTouchStart);
     this.container?.removeEventListener('touchmove', this.handleTerminalTouchMove);
-    this.container?.removeEventListener('touchend', this.resetTouchScroll);
+    this.container?.removeEventListener('touchend', this.handleTerminalTouchEnd);
     this.container?.removeEventListener('touchcancel', this.resetTouchScroll);
   }
 
@@ -552,7 +601,7 @@ export class Terminal extends LitElement {
   };
 
   private handleShortcutClick = (controlCharacter: string) => {
-    if (this.disableClick) return;
+    if (this.disableClick || performance.now() < this.suppressClickUntil) return;
 
     this.dispatchEvent(
       new CustomEvent('terminal-input', {
@@ -563,7 +612,7 @@ export class Terminal extends LitElement {
   };
 
   private handleClick = (e: MouseEvent) => {
-    if (this.disableClick) return;
+    if (this.disableClick || performance.now() < this.suppressClickUntil) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest('a[href]')) {
       // Keep native link behavior (especially important on mobile browsers).

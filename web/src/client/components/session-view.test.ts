@@ -289,18 +289,18 @@ describe('SessionView', () => {
       }
     });
 
-    it('leaves terminal touchend available to mobile swipe navigation', () => {
+    it('acts on terminal-tap without stopping propagation, so raw touchend still reaches the swipe-back handler', () => {
       const testElement = element as SessionViewTestInterface;
       testElement.uiStateManager.setIsMobile(true);
-      const touchEnd = new Event('touchend', { bubbles: true, cancelable: true });
-      const stopPropagation = vi.spyOn(touchEnd, 'stopPropagation');
-      const preventDefault = vi.spyOn(touchEnd, 'preventDefault');
+      const tap = new Event('terminal-tap', { bubbles: true, cancelable: true });
+      const stopPropagation = vi.spyOn(tap, 'stopPropagation');
+      const preventDefault = vi.spyOn(tap, 'preventDefault');
 
-      testElement.handleTerminalClick(touchEnd);
+      testElement.handleTerminalClick(tap);
 
       expect(stopPropagation).not.toHaveBeenCalled();
       expect(preventDefault).not.toHaveBeenCalled();
-      expect(touchEnd.defaultPrevented).toBe(false);
+      expect(tap.defaultPrevented).toBe(false);
     });
 
     it('leaves mobile terminal links to native navigation', () => {

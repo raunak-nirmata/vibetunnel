@@ -789,6 +789,116 @@ describe('Terminal', () => {
     });
   });
 
+  describe('tap vs scroll', () => {
+    const container = () => element.querySelector('.terminal-container') as HTMLElement;
+
+    function dispatchTouchStart(x: number, y: number) {
+      const event = new Event('touchstart', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'touches', { value: [{ clientX: x, clientY: y }] });
+      container().dispatchEvent(event);
+    }
+
+    function dispatchTouchMove(x: number, y: number) {
+      const event = new Event('touchmove', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'touches', { value: [{ clientX: x, clientY: y }] });
+      container().dispatchEvent(event);
+    }
+
+    function dispatchTouchEnd(x: number, y: number) {
+      const event = new Event('touchend', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'changedTouches', { value: [{ clientX: x, clientY: y }] });
+      container().dispatchEvent(event);
+    }
+
+    it('dispatches terminal-tap for a quick, still touch', () => {
+      const tapHandler = vi.fn();
+      element.addEventListener('terminal-tap', tapHandler);
+
+      dispatchTouchStart(50, 200);
+      dispatchTouchEnd(52, 202);
+
+      expect(tapHandler).toHaveBeenCalledOnce();
+    });
+
+    it('does not dispatch terminal-tap for a drag and arms click suppression', () => {
+      const tapHandler = vi.fn();
+      element.addEventListener('terminal-tap', tapHandler);
+
+      dispatchTouchStart(50, 200);
+      dispatchTouchMove(50, 240);
+      dispatchTouchEnd(50, 240);
+
+      expect(tapHandler).not.toHaveBeenCalled();
+
+      const pasteInput = element.querySelector(
+        '.terminal-paste-input'
+      ) as HTMLTextAreaElement | null;
+      const focusSpy = vi.spyOn(pasteInput as HTMLTextAreaElement, 'focus');
+      const terminalRoot = element.querySelector('.terminal-root') as HTMLElement;
+      terminalRoot.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      expect(focusSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not dispatch terminal-tap for a long hold and arms click suppression', () => {
+      vi.useFakeTimers();
+      try {
+        const tapHandler = vi.fn();
+        element.addEventListener('terminal-tap', tapHandler);
+
+        dispatchTouchStart(50, 200);
+        vi.advanceTimersByTime(500);
+        dispatchTouchEnd(50, 200);
+
+        expect(tapHandler).not.toHaveBeenCalled();
+
+        const pasteInput = element.querySelector(
+          '.terminal-paste-input'
+        ) as HTMLTextAreaElement | null;
+        const focusSpy = vi.spyOn(pasteInput as HTMLTextAreaElement, 'focus');
+        const terminalRoot = element.querySelector('.terminal-root') as HTMLElement;
+        terminalRoot.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+        expect(focusSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still focuses the paste input for a desktop click with no preceding touch', () => {
+      const pasteInput = element.querySelector(
+        '.terminal-paste-input'
+      ) as HTMLTextAreaElement | null;
+      const focusSpy = vi.spyOn(pasteInput as HTMLTextAreaElement, 'focus');
+      const terminalRoot = element.querySelector('.terminal-root') as HTMLElement;
+
+      terminalRoot.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+      expect(focusSpy).toHaveBeenCalled();
+    });
+
+    it('dispatches terminal-tap from the actual touch target so downstream link detection still sees it', () => {
+      const anchor = document.createElement('a');
+      anchor.href = 'https://example.com';
+      container().appendChild(anchor);
+
+      let capturedPath: EventTarget[] = [];
+      element.addEventListener('terminal-tap', (e) => {
+        capturedPath = e.composedPath();
+      });
+
+      const start = new Event('touchstart', { bubbles: true, cancelable: true });
+      Object.defineProperty(start, 'touches', { value: [{ clientX: 50, clientY: 200 }] });
+      anchor.dispatchEvent(start);
+
+      const end = new Event('touchend', { bubbles: true, cancelable: true });
+      Object.defineProperty(end, 'changedTouches', { value: [{ clientX: 50, clientY: 200 }] });
+      anchor.dispatchEvent(end);
+
+      expect(capturedPath).toContain(anchor);
+    });
+  });
+
   describe('session status', () => {
     it('should track session status for cursor control', async () => {
       element.sessionStatus = 'running';

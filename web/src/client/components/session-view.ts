@@ -800,10 +800,12 @@ export class SessionView extends LitElement {
         return;
       }
 
-      // Keep touchend observable by the document-level swipe-back handler.
-      if (e.type !== 'touchend') {
+      if (e.type !== 'terminal-tap') {
+        // Ignore the synthetic click Safari fires after touchend; terminal.ts's
+        // suppression window already handles it, and terminal-tap is the real signal.
         e.stopPropagation();
         e.preventDefault();
+        return;
       }
 
       this.scheduleMobileHardwareFocus();
