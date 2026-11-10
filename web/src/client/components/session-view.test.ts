@@ -545,8 +545,6 @@ describe('SessionView', () => {
           detail: {
             cols: 100,
             rows: 30,
-            isMobile: false,
-            isHeightOnlyChange: false,
             source: 'test',
           },
           bubbles: true,

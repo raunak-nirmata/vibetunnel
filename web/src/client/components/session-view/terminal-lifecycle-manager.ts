@@ -94,6 +94,8 @@ export class TerminalLifecycleManager {
   setupTerminal() {
     // Terminal element will be created in render()
     // We'll initialize it in updated() after first render
+    window.addEventListener('pageshow', this.handlePageShow);
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
   async initializeTerminal() {
@@ -174,7 +176,7 @@ export class TerminalLifecycleManager {
   async handleTerminalResize(event: Event) {
     const customEvent = event as CustomEvent;
     // Update terminal dimensions for display
-    const { cols, rows, isMobile, isHeightOnlyChange, source } = customEvent.detail;
+    const { cols, rows, source } = customEvent.detail;
 
     // Debug logging for terminal resize events
     logger.debug('Terminal resize event:', {
@@ -189,14 +191,10 @@ export class TerminalLifecycleManager {
       this.stateCallbacks.updateTerminalDimensions(cols, rows);
     }
 
-    // On mobile, skip sending height-only changes to the server (keyboard events)
-    if (isMobile && isHeightOnlyChange) {
-      logger.debug(
-        `skipping mobile height-only resize to server: ${cols}x${rows} (source: ${source})`
-      );
-      return;
-    }
+    this.scheduleResizeSend(cols, rows);
+  }
 
+  private scheduleResizeSend(cols: number, rows: number) {
     // Debounce resize requests to prevent jumpiness
     if (this.resizeTimeout) {
       clearTimeout(this.resizeTimeout);
@@ -238,6 +236,28 @@ export class TerminalLifecycleManager {
       }
     }, 250) as unknown as number; // 250ms debounce delay
   }
+
+  private resetResizeCache() {
+    this.lastResizeWidth = 0;
+    this.lastResizeHeight = 0;
+  }
+
+  // Resume bypasses the terminal-resize event, not the debounce: ghostty-web's resize() doesn't
+  // fire onResize when dimensions are unchanged, and the server may have lost our size while the
+  // tab was suspended.
+  private handleResume = () => {
+    if (!this.terminal) return;
+    this.resetResizeCache();
+    this.scheduleResizeSend(this.terminal.cols, this.terminal.rows);
+  };
+
+  private handlePageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) this.handleResume();
+  };
+
+  private handleVisibilityChange = () => {
+    if (document.visibilityState === 'visible') this.handleResume();
+  };
 
   handleTerminalPaste(e: Event) {
     const customEvent = e as CustomEvent;
@@ -285,6 +305,9 @@ export class TerminalLifecycleManager {
       clearTimeout(this.resizeTimeout);
       this.resizeTimeout = null;
     }
+
+    window.removeEventListener('pageshow', this.handlePageShow);
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
 
     if (this.terminal && this.eventHandlers) {
       this.terminal.removeEventListener(

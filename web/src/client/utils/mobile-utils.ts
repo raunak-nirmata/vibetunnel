@@ -5,7 +5,6 @@
 
 /**
  * Detect if the current device is a mobile device (phone or tablet).
- * Uses the same logic as index.html for consistency.
  *
  * @returns true if the device is mobile (iPhone, iPad, iPod, Android)
  */

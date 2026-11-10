@@ -5,7 +5,7 @@
  *
  * @fires terminal-ready - When terminal is initialized and ready
  * @fires terminal-input - When user types (detail: { text: string })
- * @fires terminal-resize - When terminal is resized (detail: { cols: number, rows: number, isMobile: boolean, isHeightOnlyChange: boolean, source: string })
+ * @fires terminal-resize - When terminal is resized (detail: { cols: number, rows: number, source: string })
  */
 
 import { FitAddon, Ghostty, Terminal as GhosttyTerminal } from 'ghostty-web';
@@ -29,8 +29,6 @@ async function ensureGhostty(): Promise<Ghostty> {
 type TerminalResizeDetail = {
   cols: number;
   rows: number;
-  isMobile: boolean;
-  isHeightOnlyChange: boolean;
   source: string;
 };
 
@@ -73,12 +71,10 @@ export class Terminal extends LitElement {
   private touchScrollRemainder = 0;
   private touchScrolling = false;
 
-  private isMobile = false;
   private lastCols = 0;
   private lastRows = 0;
 
   private pendingResizeSource: string | null = null;
-  private pendingResizePrev: { cols: number; rows: number } | null = null;
   private initializationId = 0;
 
   connectedCallback() {
@@ -375,7 +371,6 @@ export class Terminal extends LitElement {
 
   private requestResizeMeta(source: string) {
     this.pendingResizeSource = source;
-    this.pendingResizePrev = { cols: this.lastCols || this.cols, rows: this.lastRows || this.rows };
   }
 
   private applyFontSize() {
@@ -398,11 +393,6 @@ export class Terminal extends LitElement {
   private applyTheme() {
     if (!this.terminal) return;
     this.terminal.options.theme = this.getResolvedTheme();
-  }
-
-  private detectMobile() {
-    const MOBILE_BREAKPOINT = 768;
-    this.isMobile = window.innerWidth < MOBILE_BREAKPOINT;
   }
 
   private applyHorizontalFit() {
@@ -436,7 +426,6 @@ export class Terminal extends LitElement {
 
   public fitTerminal(source = 'unknown') {
     if (!this.terminal || !this.fitAddon) return;
-    this.detectMobile();
 
     if (this.fitHorizontally) {
       this.applyHorizontalFit();
@@ -496,28 +485,15 @@ export class Terminal extends LitElement {
       });
 
       term.onResize(({ cols, rows }) => {
-        const prev = this.pendingResizePrev ?? {
-          cols: this.lastCols || cols,
-          rows: this.lastRows || rows,
-        };
         const source = this.pendingResizeSource ?? 'unknown';
-        this.pendingResizePrev = null;
         this.pendingResizeSource = null;
-
-        const isHeightOnlyChange = cols === prev.cols && rows !== prev.rows;
 
         this.lastCols = cols;
         this.lastRows = rows;
         this.cols = cols;
         this.rows = rows;
 
-        const detail: TerminalResizeDetail = {
-          cols,
-          rows,
-          isMobile: this.isMobile,
-          isHeightOnlyChange,
-          source,
-        };
+        const detail: TerminalResizeDetail = { cols, rows, source };
 
         this.dispatchEvent(new CustomEvent('terminal-resize', { detail, bubbles: true }));
       });
