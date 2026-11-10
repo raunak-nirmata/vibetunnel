@@ -60,6 +60,9 @@ export interface UIState {
 
   // Keyboard capture
   keyboardCaptureActive: boolean;
+
+  // True while the user is mid-scroll-gesture on the terminal; hides the mobile action bar
+  scrollGestureActive: boolean;
 }
 
 export interface UIStateCallbacks {
@@ -113,6 +116,9 @@ export class UIStateManager {
 
     // Keyboard capture
     keyboardCaptureActive: true,
+
+    // Scroll gesture
+    scrollGestureActive: false,
   };
 
   private callbacks: UIStateCallbacks | null = null;
@@ -258,6 +264,12 @@ export class UIStateManager {
 
   toggleCtrlAlpha(): void {
     this.state.showCtrlAlpha = !this.state.showCtrlAlpha;
+    this.callbacks?.requestUpdate();
+  }
+
+  // Scroll gesture
+  setScrollGestureActive(active: boolean): void {
+    this.state.scrollGestureActive = active;
     this.callbacks?.requestUpdate();
   }
 

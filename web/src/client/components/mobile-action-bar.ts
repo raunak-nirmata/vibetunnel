@@ -72,6 +72,8 @@ export class MobileActionBar extends LitElement {
   @property({ type: Boolean }) keyboardVisible = false;
   @property({ type: String }) currentMode: 'normal' | 'plan' | 'auto-accept' = 'normal';
   @property({ type: Number }) keyboardHeight = 0;
+  // Faded out while the terminal is mid-scroll-gesture so a drag that starts on a button doesn't fire it.
+  @property({ type: Boolean }) hidden = false;
 
   @state() private showCommandPalette = false;
   @state() private showClipboardManager = false;
@@ -79,6 +81,13 @@ export class MobileActionBar extends LitElement {
   @state() private isExpanded = false;
   @state() private longPressTimer: number | null = null;
   @state() private isMobile = detectMobile();
+
+  // Movement tracking so a drag that starts on a button (implicit pointer capture) doesn't fire its action.
+  private static readonly MOVE_THRESHOLD_PX = 10;
+  private pressPointerId: number | null = null;
+  private pressStartX = 0;
+  private pressStartY = 0;
+  private dragExceededThreshold = false;
 
   private readonly primaryActions: ActionButton[] = [
     // Temporarily disabled - no functionality yet
@@ -200,10 +209,15 @@ export class MobileActionBar extends LitElement {
     logger.debug(`Button pressed: ${button.id}`);
     this.triggerHaptic('light');
 
+    this.pressPointerId = event.pointerId;
+    this.pressStartX = event.clientX;
+    this.pressStartY = event.clientY;
+    this.dragExceededThreshold = false;
+
     // Set timer for all buttons - we'll check for long press action in the timeout
     this.longPressTimer = window.setTimeout(() => {
-      // This timeout means it's a long press
-      if (button.longPressAction) {
+      // This timeout means it's a long press; skip it if the pointer drifted off the button
+      if (button.longPressAction && !this.dragExceededThreshold) {
         logger.debug(`Long press action: ${button.longPressAction}`);
         this.triggerHaptic('medium');
         this.executeAction(button.longPressAction);
@@ -212,14 +226,36 @@ export class MobileActionBar extends LitElement {
     }, 500); // 500ms long press
   }
 
+  private handleButtonMove(event: PointerEvent) {
+    if (event.pointerId !== this.pressPointerId) return;
+    const movedX = Math.abs(event.clientX - this.pressStartX);
+    const movedY = Math.abs(event.clientY - this.pressStartY);
+    if (movedX > MobileActionBar.MOVE_THRESHOLD_PX || movedY > MobileActionBar.MOVE_THRESHOLD_PX) {
+      this.dragExceededThreshold = true;
+    }
+  }
+
   private handleButtonRelease(button: ActionButton, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
 
-    // If long press timer is still active, it's a regular tap
+    const movedX = Math.abs(event.clientX - this.pressStartX);
+    const movedY = Math.abs(event.clientY - this.pressStartY);
+    const moved =
+      this.dragExceededThreshold ||
+      event.pointerId !== this.pressPointerId ||
+      movedX > MobileActionBar.MOVE_THRESHOLD_PX ||
+      movedY > MobileActionBar.MOVE_THRESHOLD_PX;
+
+    // If long press timer is still active, it's a regular tap (unless the pointer drifted, e.g. a scroll
+    // that started on the button via implicit touch pointer capture).
     if (this.longPressTimer) {
       clearTimeout(this.longPressTimer);
       this.longPressTimer = null;
+      if (moved) {
+        logger.debug(`Button release ignored, pointer moved: ${button.id}`);
+        return;
+      }
       logger.debug(`Button tap: ${button.id} -> ${button.action}`);
       this.executeAction(button.action);
     } else {
@@ -315,27 +351,32 @@ export class MobileActionBar extends LitElement {
 
     const dynamicStyle =
       this.keyboardVisible && this.keyboardHeight > 0
-        ? `bottom: ${this.keyboardHeight + 16}px; left: 50%; transform: translateX(-50%);`
-        : `bottom: calc(env(safe-area-inset-bottom, 16px) + 16px); left: 50%; transform: translateX(-50%);`;
+        ? `bottom: ${this.keyboardHeight + 8}px; right: 12px;`
+        : `bottom: calc(env(safe-area-inset-bottom, 0px) + 8px); right: 12px;`;
+
+    const barVisibilityClass = this.hidden
+      ? 'translate-y-4 opacity-0 pointer-events-none'
+      : `translate-y-0 ${this.isExpanded ? 'opacity-100' : 'opacity-85'} active:opacity-100`;
 
     return html`
       <!-- Mobile Action Bar -->
-      <div 
-        class="fixed transition-all duration-300 ${this.isExpanded ? 'scale-105' : 'scale-100'}"
+      <div
+        class="fixed transition-all duration-[400ms] ${barVisibilityClass}"
         style="${dynamicStyle} z-index: 1100; position: fixed !important;"
       >
         <!-- Primary Actions (Always Visible) -->
-        <div class="bg-bg/90 backdrop-blur-lg border border-border/50 rounded-2xl shadow-2xl p-2 max-w-sm mx-auto">
-          <div class="flex items-center gap-2">
+        <div class="bg-bg/90 backdrop-blur-lg border border-border/50 rounded-full shadow-2xl p-1">
+          <div class="flex items-center gap-2 p-0.5">
             ${this.primaryActions.map(
               (button) => html`
               <button
-                class="relative flex flex-col items-center justify-center w-14 h-14 rounded-xl transition-all duration-200 ${
+                class="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all duration-200 ${
                   button.highlight
                     ? 'bg-primary/20 border border-primary/30 text-primary'
                     : 'bg-bg-secondary/80 hover:bg-surface-hover text-text hover:text-primary'
                 } active:scale-95 touch-manipulation"
                 @pointerdown=${(e: PointerEvent) => this.handleButtonPress(button, e)}
+                @pointermove=${(e: PointerEvent) => this.handleButtonMove(e)}
                 @pointerup=${(e: PointerEvent) => this.handleButtonRelease(button, e)}
                 @pointercancel=${() => {
                   if (this.longPressTimer) {
@@ -346,9 +387,8 @@ export class MobileActionBar extends LitElement {
                 title="${button.title}${button.longPressAction ? ' (Long press for more)' : ''}"
                 aria-label="${button.title}"
               >
-                <span class="text-xl mb-0.5">${button.icon}</span>
-                <span class="text-xs font-medium leading-none">${button.title.split(' ')[0]}</span>
-                
+                <span class="text-xl">${button.icon}</span>
+
                 ${
                   button.badge
                     ? html`
@@ -358,7 +398,7 @@ export class MobileActionBar extends LitElement {
                 `
                     : ''
                 }
-                
+
                 ${
                   button.longPressAction
                     ? html`
@@ -369,10 +409,10 @@ export class MobileActionBar extends LitElement {
               </button>
             `
             )}
-            
+
             <!-- Expand/Collapse Toggle -->
             <button
-              class="flex items-center justify-center w-8 h-14 text-text-muted hover:text-text transition-colors ml-1"
+              class="flex items-center justify-center w-7 h-10 text-text-muted hover:text-text transition-colors"
               @click=${() => {
                 this.isExpanded = !this.isExpanded;
                 this.triggerHaptic('light');
@@ -380,10 +420,10 @@ export class MobileActionBar extends LitElement {
               title="${this.isExpanded ? 'Collapse' : 'More actions'}"
               aria-label="${this.isExpanded ? 'Collapse menu' : 'Show more actions'}"
             >
-              <svg 
-                width="16" 
-                height="16" 
-                viewBox="0 0 20 20" 
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 20 20"
                 fill="currentColor"
                 class="transition-transform duration-200 ${this.isExpanded ? 'rotate-180' : ''}"
               >
@@ -391,18 +431,19 @@ export class MobileActionBar extends LitElement {
               </svg>
             </button>
           </div>
-          
+
           <!-- Secondary Actions (Expandable) -->
           ${
             this.isExpanded
               ? html`
             <div class="mt-2 pt-2 border-t border-border/30">
-              <div class="flex items-center gap-2 justify-center">
+              <div class="flex items-center gap-2 justify-center p-0.5">
                 ${this.secondaryActions.map(
                   (button) => html`
                   <button
-                    class="relative flex flex-col items-center justify-center w-12 h-12 rounded-lg transition-all duration-200 bg-bg-tertiary/80 hover:bg-surface-hover text-text-muted hover:text-text active:scale-95 touch-manipulation"
+                    class="relative flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200 bg-bg-tertiary/80 hover:bg-surface-hover text-text-muted hover:text-text active:scale-95 touch-manipulation"
                     @pointerdown=${(e: PointerEvent) => this.handleButtonPress(button, e)}
+                    @pointermove=${(e: PointerEvent) => this.handleButtonMove(e)}
                     @pointerup=${(e: PointerEvent) => this.handleButtonRelease(button, e)}
                     @pointercancel=${() => {
                       if (this.longPressTimer) {
@@ -413,9 +454,8 @@ export class MobileActionBar extends LitElement {
                     title="${button.title}${button.longPressAction ? ' (Long press for more)' : ''}"
                     aria-label="${button.title}"
                   >
-                    <span class="text-lg mb-0.5">${button.icon}</span>
-                    <span class="text-xs font-medium leading-none">${button.title.split(' ')[0]}</span>
-                    
+                    <span class="text-lg">${button.icon}</span>
+
                     ${
                       button.longPressAction
                         ? html`

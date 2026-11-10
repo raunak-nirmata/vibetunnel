@@ -2,6 +2,11 @@
 
 ## [1.0.0-beta.19] - Unreleased
 
+### Fixed
+
+- Stopped a scroll that starts on the mobile action bar from firing the button it started on, which could raise the on-screen keyboard mid-scroll.
+- Shrank the mobile action bar to icon-only buttons, moved it to the bottom-right corner, and faded it out while the terminal is mid-scroll-gesture so it covers less of the terminal.
+
 ## [1.0.0-beta.18] - 2026-07-11
 
 ### Changed

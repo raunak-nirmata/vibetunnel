@@ -323,6 +323,7 @@ export class Terminal extends LitElement {
     if (!this.touchScrolling) {
       if (Math.abs(totalY) <= 6 || Math.abs(totalY) <= Math.abs(totalX)) return;
       this.touchScrolling = true;
+      this.dispatchScrollGestureEvent(true);
     }
 
     if (event.cancelable) event.preventDefault();
@@ -342,9 +343,20 @@ export class Terminal extends LitElement {
   };
 
   private resetTouchScroll = () => {
+    // Covers touchend, touchcancel, and the mid-gesture multi-finger bailout in touchstart.
+    if (this.touchScrolling) {
+      this.dispatchScrollGestureEvent(false);
+    }
     this.touchScrolling = false;
     this.touchScrollRemainder = 0;
   };
+
+  /** Lets the mobile action bar fade out of the way while the user is actively scrolling. */
+  private dispatchScrollGestureEvent(active: boolean) {
+    this.dispatchEvent(
+      new CustomEvent('terminal-scroll-gesture', { bubbles: true, detail: { active } })
+    );
+  }
 
   /**
    * Classifies the just-finished gesture as a tap or not, then either dispatches

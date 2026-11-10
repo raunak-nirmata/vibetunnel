@@ -825,6 +825,10 @@ export class SessionView extends LitElement {
     this.terminalLifecycleManager.handleTerminalResize(event);
   }
 
+  private handleTerminalScrollGesture(event: CustomEvent<{ active: boolean }>) {
+    this.uiStateManager.setScrollGestureActive(event.detail.active);
+  }
+
   private handleTerminalReady() {
     logger.log('Terminal ready event received');
     // Terminal is ready, ensure it's properly initialized
@@ -1519,6 +1523,8 @@ export class SessionView extends LitElement {
                   .onTerminalInput=${this.boundHandleTerminalInput}
                   .onTerminalResize=${this.boundHandleTerminalResize}
                   .onTerminalReady=${this.boundHandleTerminalReady}
+                  @terminal-scroll-gesture=${(e: Event) =>
+                    this.handleTerminalScrollGesture(e as CustomEvent<{ active: boolean }>)}
                 ></terminal-renderer>
                 
                 <!-- Chat view overlay (always rendered but hidden to preserve history) -->
@@ -1544,6 +1550,7 @@ export class SessionView extends LitElement {
             ? html`
           <mobile-action-bar
             .visible=${!uiState.showQuickKeys}
+            .hidden=${uiState.scrollGestureActive}
             .session=${this.session}
             .keyboardVisible=${uiState.keyboardHeight > 0}
             .keyboardHeight=${uiState.keyboardHeight}
