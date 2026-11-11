@@ -12,10 +12,10 @@
 import { FitAddon, Ghostty, Terminal as GhosttyTerminal } from 'ghostty-web';
 import { html, LitElement, type PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { BREAKPOINTS } from '../utils/constants.js';
 import { KeyboardShortcutLinkProvider } from '../utils/keyboard-shortcut-link-provider.js';
 import { createLogger } from '../utils/logger.js';
 import { TERMINAL_FONT_FAMILY, TERMINAL_IDS } from '../utils/terminal-constants.js';
-import { BREAKPOINTS } from '../utils/constants.js';
 import { TerminalPreferencesManager } from '../utils/terminal-preferences.js';
 import { TERMINAL_THEMES, type TerminalThemeId } from '../utils/terminal-themes.js';
 import { getCurrentTheme } from '../utils/theme-utils.js';
@@ -215,6 +215,18 @@ export class Terminal extends LitElement {
 
   public clear() {
     this.terminal?.clear();
+    this.preservedScrollPosition = null;
+    this.followCursorEnabled = true;
+  }
+
+  /**
+   * Recreate the wasm terminal's state. Unlike clear(), this also leaves the alternate
+   * screen and turns off mouse/kitty keyboard modes from a previous connection, so it's
+   * the right call on reconnect, before a fresh replay carries its own mode preamble.
+   */
+  public reset() {
+    this.terminal?.reset();
+    this.fitTerminal('reset');
     this.preservedScrollPosition = null;
     this.followCursorEnabled = true;
   }

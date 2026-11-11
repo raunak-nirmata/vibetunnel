@@ -94,8 +94,8 @@ describe('AsciinemaWriter byte position tracking', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     const headerSize = fs.statSync(testFile).size;
 
-    // Write output with a clear screen sequence
-    const clearScreen = '\x1b[2J';
+    // Write output with a clear scrollback sequence (3J is still a tracked pruning sequence)
+    const clearScreen = '\x1b[3J';
     const outputWithClear = `Some text before${clearScreen}Some text after`;
     writer.writeOutput(Buffer.from(outputWithClear));
 
@@ -104,7 +104,6 @@ describe('AsciinemaWriter byte position tracking', () => {
     // Should have detected the clear sequence
     expect(pruningEvents).toHaveLength(1);
     expect(pruningEvents[0].sequence).toBe(clearScreen);
-    expect(pruningEvents[0].position).toBeGreaterThan(headerSize);
     expect(pruningEvents[0].timestamp).toBeGreaterThan(0);
 
     // Verify the callback was called AFTER the write completed
@@ -114,10 +113,9 @@ describe('AsciinemaWriter byte position tracking', () => {
     const finalSize = fs.statSync(testFile).size;
     expect(pruningEvents[0].position).toBeLessThan(finalSize);
 
-    // The position should be after the sequence text
-    const sequenceIndex = outputWithClear.indexOf(clearScreen) + clearScreen.length;
-    // Account for JSON encoding overhead
-    expect(pruningEvents[0].position).toBeGreaterThan(headerSize + sequenceIndex);
+    // The position reported is the start of the event's line (so replay always
+    // resumes on a line boundary), not somewhere inside the sequence.
+    expect(pruningEvents[0].position).toBe(headerSize);
   });
 
   it('should detect multiple pruning sequences', async () => {
@@ -135,7 +133,7 @@ describe('AsciinemaWriter byte position tracking', () => {
     writer.writeOutput(Buffer.from('Initial text\r\n'));
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    writer.writeOutput(Buffer.from('Before clear\x1b[2JAfter clear'));
+    writer.writeOutput(Buffer.from('Before clear\x1b[3JAfter clear'));
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     writer.writeOutput(Buffer.from('More text\x1bcReset terminal'));
@@ -336,11 +334,13 @@ describe('AsciinemaWriter byte position tracking', () => {
       return;
     }
 
-    // The reported position should be exactly where the sequence ends in the file
+    // The reported position should be exactly where the event's line starts in the
+    // file (a line boundary), not somewhere inside the sequence.
     expect(pruningPositions).toHaveLength(1);
     const reportedPosition = pruningPositions[0];
 
-    // Calculate expected position
+    // Calculate expected position: this is the only event, so it starts right
+    // after the header line.
     const headerLine = lines[0];
     const headerBytes = Buffer.from(`${headerLine}\n`, 'utf8').length;
 
@@ -352,37 +352,12 @@ describe('AsciinemaWriter byte position tracking', () => {
     expect(eventData[1]).toBe('o'); // output event
     expect(eventData[2]).toBe(fullOutput); // full data should be written
 
-    // Find where the sequence ends in the actual data
-    const dataString = eventData[2];
-    const sequenceIndex = dataString.indexOf(clearSequence);
-    expect(sequenceIndex).toBeGreaterThan(0);
+    expect(reportedPosition).toBe(headerBytes);
 
-    // The sequence ends at this position in the data (not used but kept for clarity)
-    // const sequenceEndInData = sequenceIndex + clearSequence.length;
-
-    // Now find where this maps to in the JSON string
-    // We need to account for JSON escaping of the escape character
-    const jsonEncodedData = JSON.stringify(dataString);
-    const jsonEncodedSequence = JSON.stringify(clearSequence).slice(1, -1); // Remove quotes
-
-    // Find where the sequence ends in the JSON-encoded string
-    const sequenceEndInJson =
-      jsonEncodedData.indexOf(jsonEncodedSequence) + jsonEncodedSequence.length;
-
-    // The position in the file is: header + event prefix + position in data
-    // Event prefix is: [timestamp,"o","
-    const eventPrefix = eventLine?.substring(0, eventLine?.indexOf(jsonEncodedData));
-    const prefixBytes = Buffer.from(eventPrefix, 'utf8').length;
-
-    // Calculate bytes up to the sequence end in the JSON string
-    const dataUpToSequenceEnd = jsonEncodedData.substring(0, sequenceEndInJson);
-    const sequenceBytesInJson = Buffer.from(dataUpToSequenceEnd, 'utf8').length;
-
-    // Remove the opening quote byte since it's part of the prefix
-    const expectedPosition = headerBytes + prefixBytes + sequenceBytesInJson - 1;
-
-    // Allow for small discrepancies due to JSON encoding
-    expect(Math.abs(reportedPosition - expectedPosition)).toBeLessThanOrEqual(10);
+    // The position must be a true line start: either file offset 0 or the byte
+    // right before it is a newline.
+    const fileBytes = fs.readFileSync(testFile);
+    expect(reportedPosition === 0 || fileBytes[reportedPosition - 1] === 0x0a).toBe(true);
   });
 
   it('should validate file position periodically', async () => {

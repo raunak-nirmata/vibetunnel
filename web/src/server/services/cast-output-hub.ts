@@ -3,16 +3,25 @@ import * as fs from 'fs';
 import type { SessionManager } from '../pty/session-manager.js';
 import type { AsciinemaHeader } from '../pty/types.js';
 import { createLogger } from '../utils/logger.js';
-import {
-  calculatePruningPositionInFile,
-  containsPruningSequence,
-  findLastPrunePoint,
-  logPruningDetection,
-} from '../utils/pruning-detector.js';
+import { detectLastPruningSequence, logPruningDetection } from '../utils/pruning-detector.js';
 
 const logger = createLogger('cast-output-hub');
 
 const HEADER_READ_BUFFER_SIZE = 4096;
+
+// Cap how much of the cast we replay, counted back from the end of the file.
+// Bounds replay time for normal-screen sessions that never clear (shells, build logs).
+const REPLAY_MAX_BYTES = 2 * 1024 * 1024;
+
+// Mode sequences the client needs to know about even when the window that carried
+// them is outside the replay cap; without these a resumed client can't tell mouse
+// tracking or kitty keyboard mode is on.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are necessary for terminal output
+const MOUSE_MODE_RE = /\x1b\[\?(1000|1002|1003|1006)h/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are necessary for terminal output
+const KITTY_KEYBOARD_PUSH_RE = /\x1b\[>\d+u/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape sequences are necessary for terminal output
+const SCREEN_SWITCH_RE = /\x1b\[\?1049([hl])/g;
 
 type AsciinemaOutputEvent = [number, 'o', string];
 type AsciinemaInputEvent = [number, 'i', string];
@@ -230,32 +239,48 @@ export class CastOutputHub {
     }
   }
 
-  private processClearSequence(
-    event: AsciinemaOutputEvent,
-    eventIndex: number,
-    fileOffset: number,
-    currentResize: AsciinemaResizeEvent | null,
-    eventLine: string
-  ): {
-    lastClearIndex: number;
-    lastClearOffset: number;
-    lastResizeBeforeClear: AsciinemaResizeEvent | null;
-  } | null {
-    const prunePoint = findLastPrunePoint(event[2]);
-    if (!prunePoint) return null;
+  /**
+   * Find the byte offset of the first line that starts at or after `fromOffset`.
+   * Used to land the replay window on a line boundary.
+   */
+  private findNextLineStart(streamPath: string, fromOffset: number, size: number): number {
+    if (fromOffset <= 0) return 0;
+    const fd = fs.openSync(streamPath, 'r');
+    try {
+      const bufSize = 64 * 1024;
+      const buf = Buffer.alloc(bufSize);
+      let pos = fromOffset;
+      while (pos < size) {
+        const toRead = Math.min(bufSize, size - pos);
+        const bytesRead = fs.readSync(fd, buf, 0, toRead, pos);
+        if (bytesRead <= 0) break;
+        const idx = buf.subarray(0, bytesRead).indexOf(0x0a);
+        if (idx !== -1) return pos + idx + 1;
+        pos += bytesRead;
+      }
+      return size;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
 
-    const lastClearOffset = calculatePruningPositionInFile(
-      fileOffset,
-      eventLine,
-      prunePoint.position
-    );
-    logPruningDetection(prunePoint.sequence, lastClearOffset, '(retroactive scan)');
-
-    return {
-      lastClearIndex: eventIndex,
-      lastClearOffset,
-      lastResizeBeforeClear: currentResize,
-    };
+  /**
+   * Track mode state (screen switch, mouse tracking, kitty keyboard) from a line
+   * that falls outside the replay window, so a synthetic preamble can restore it.
+   */
+  private trackPreWindowModeState(
+    data: string,
+    state: { screenSwitch: 'h' | 'l' | null; mouseModes: Set<string>; kittyPush: string | null }
+  ): void {
+    for (const match of data.matchAll(SCREEN_SWITCH_RE)) {
+      state.screenSwitch = match[1] as 'h' | 'l';
+    }
+    for (const match of data.matchAll(MOUSE_MODE_RE)) {
+      state.mouseModes.add(match[0]);
+    }
+    for (const match of data.matchAll(KITTY_KEYBOARD_PUSH_RE)) {
+      state.kittyPush = match[0];
+    }
   }
 
   private sendExistingContent(
@@ -266,9 +291,11 @@ export class CastOutputHub {
     try {
       const sessionInfo = this.sessionManager.loadSessionInfo(sessionId);
       let startOffset = sessionInfo?.lastClearOffset ?? 0;
+
+      let size = 0;
       if (fs.existsSync(streamPath)) {
-        const stats = fs.statSync(streamPath);
-        startOffset = Math.min(startOffset, stats.size);
+        size = fs.statSync(streamPath).size;
+        startOffset = Math.min(startOffset, size);
       }
 
       // Read header line (best-effort)
@@ -303,20 +330,45 @@ export class CastOutputHub {
         }
       }
 
+      // Window of the file we actually replay raw, capped to the last REPLAY_MAX_BYTES,
+      // landed on a line boundary. Content between startOffset and windowStart is only
+      // scanned for mode state, never buffered or sent verbatim.
+      let windowStart = startOffset;
+      const capCandidate = size - REPLAY_MAX_BYTES;
+      if (capCandidate > startOffset) {
+        windowStart = this.findNextLineStart(streamPath, capCandidate, size);
+      }
+
       const analysisStream = fs.createReadStream(streamPath, {
         encoding: 'utf8',
         start: startOffset,
       });
       let lineBuffer = '';
-      const events: AsciinemaEvent[] = [];
-      let lastClearIndex = -1;
-      let lastResizeBeforeClear: AsciinemaResizeEvent | null = null;
-      let currentResize: AsciinemaResizeEvent | null = null;
 
+      // Events at or after windowStart, buffered for replay.
+      const events: AsciinemaEvent[] = [];
+      // Index into `events` of the last clear sequence found inside the window, if any.
+      let windowClearIndex = -1;
+      let windowClearSliceIndex = 0;
+      // Resize immediately before the in-window clear, for header dimensions.
+      let resizeBeforeWindowClear: AsciinemaResizeEvent | null = null;
+      // Resize most recently seen before windowStart, frozen once we cross it.
+      let resizeBeforeWindowStart: AsciinemaResizeEvent | null = null;
+
+      // Mode state tracked only from lines before windowStart, for the synthetic preamble.
+      const preWindowState: {
+        screenSwitch: 'h' | 'l' | null;
+        mouseModes: Set<string>;
+        kittyPush: string | null;
+      } = { screenSwitch: null, mouseModes: new Set(), kittyPush: null };
+
+      // Global last-clear position across the whole scanned range, persisted regardless
+      // of the replay window, so the next subscriber starts from the true last clear.
       let fileOffset = startOffset;
       let lastClearOffset = startOffset;
 
       const processLine = (line: string) => {
+        const lineStart = fileOffset;
         fileOffset += Buffer.byteLength(line, 'utf8') + 1;
         if (!line.trim()) return;
 
@@ -329,32 +381,38 @@ export class CastOutputHub {
 
           if (!Array.isArray(parsed)) return;
 
+          const inWindow = lineStart >= windowStart;
+
           if (parsed[0] === 'exit') {
-            events.push(parsed as AsciinemaExitEvent);
+            if (inWindow) events.push(parsed as AsciinemaExitEvent);
             return;
           }
 
           if (parsed.length < 3 || typeof parsed[0] !== 'number') return;
           const event = parsed as AsciinemaEvent;
 
-          if (isResizeEvent(event)) currentResize = event;
-
-          if (isOutputEvent(event) && containsPruningSequence(event[2])) {
-            const clearResult = this.processClearSequence(
-              event as AsciinemaOutputEvent,
-              events.length,
-              fileOffset,
-              currentResize,
-              line
-            );
-            if (clearResult) {
-              lastClearIndex = clearResult.lastClearIndex;
-              lastClearOffset = clearResult.lastClearOffset;
-              lastResizeBeforeClear = clearResult.lastResizeBeforeClear;
-            }
+          if (isResizeEvent(event) && !inWindow) {
+            resizeBeforeWindowStart = event;
           }
 
-          events.push(event);
+          if (inWindow) events.push(event);
+
+          if (isOutputEvent(event)) {
+            const detection = detectLastPruningSequence(event[2]);
+            if (detection) {
+              lastClearOffset = lineStart;
+              logPruningDetection(detection.sequence, lineStart, '(retroactive scan)');
+
+              if (inWindow) {
+                windowClearIndex = events.length - 1;
+                windowClearSliceIndex = detection.index;
+              }
+            }
+
+            if (!inWindow) {
+              this.trackPreWindowModeState(event[2], preWindowState);
+            }
+          }
         } catch {
           // ignore invalid lines
         }
@@ -377,18 +435,43 @@ export class CastOutputHub {
           processLine(lineBuffer);
         }
 
+        if (sessionInfo && lastClearOffset !== startOffset) {
+          sessionInfo.lastClearOffset = lastClearOffset;
+          this.sessionManager.saveSessionInfo(sessionId, sessionInfo);
+        }
+
         let startIndex = 0;
-        if (lastClearIndex >= 0) {
-          startIndex = lastClearIndex + 1;
-          if (sessionInfo) {
-            sessionInfo.lastClearOffset = lastClearOffset;
-            this.sessionManager.saveSessionInfo(sessionId, sessionInfo);
+        const preamble: string[] = [];
+        let lastResizeBeforeClear: AsciinemaResizeEvent | null = null;
+
+        if (windowClearIndex >= 0) {
+          // A clear fell inside the window: replay from it, sliced to the sequence itself.
+          startIndex = windowClearIndex;
+          const clearEvent = events[windowClearIndex] as AsciinemaOutputEvent;
+          events[windowClearIndex] = [
+            clearEvent[0],
+            'o',
+            clearEvent[2].slice(windowClearSliceIndex),
+          ];
+          for (let i = windowClearIndex - 1; i >= 0; i--) {
+            if (isResizeEvent(events[i])) {
+              resizeBeforeWindowClear = events[i] as AsciinemaResizeEvent;
+              break;
+            }
           }
+          lastResizeBeforeClear = resizeBeforeWindowClear;
+        } else if (windowStart > startOffset) {
+          // The cap moved the start past the last clear: synthesize the mode state the
+          // client would otherwise never learn about.
+          if (preWindowState.screenSwitch === 'h') preamble.push('\x1b[?1049h');
+          for (const seq of preWindowState.mouseModes) preamble.push(seq);
+          if (preWindowState.kittyPush) preamble.push(preWindowState.kittyPush);
+          lastResizeBeforeClear = resizeBeforeWindowStart;
         }
 
         if (header) {
           const headerToSend = { ...header };
-          if (lastClearIndex >= 0 && lastResizeBeforeClear) {
+          if (lastResizeBeforeClear) {
             const [w, h] = lastResizeBeforeClear[2].split('x');
             headerToSend.width = Number.parseInt(w, 10);
             headerToSend.height = Number.parseInt(h, 10);
@@ -396,21 +479,19 @@ export class CastOutputHub {
           listener({ kind: 'header', header: headerToSend });
         }
 
-        let exitFound = false;
+        for (const seq of preamble) {
+          listener({ kind: 'output', data: seq, historical: true });
+        }
+
         for (let i = startIndex; i < events.length; i++) {
           const event = events[i];
           if (isExitEvent(event)) {
-            exitFound = true;
             listener({ kind: 'exit', exitCode: event[1] });
           } else if (isOutputEvent(event)) {
             listener({ kind: 'output', data: event[2], historical: true });
           } else if (isResizeEvent(event)) {
             listener({ kind: 'resize', dimensions: event[2], historical: true });
           }
-        }
-
-        if (exitFound) {
-          // Caller may choose to unsubscribe.
         }
       });
 

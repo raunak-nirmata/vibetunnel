@@ -105,15 +105,17 @@ describe('CastOutputHub - Asciinema Stream Pruning', () => {
     expect(header.width).toBe(100); // From last resize before clear
     expect(header.height).toBe(30);
 
-    // Should only have content after the last clear
+    // The clear event itself is replayed, sliced from the sequence onward, plus
+    // lines 9, 10, 11 after it.
     const outputEvents = events.filter((e) => e.kind === 'output') as Array<{
       kind: 'output';
       data: string;
     }>;
-    expect(outputEvents.length).toBe(3); // Lines 9, 10, 11
-    expect(outputEvents[0].data).toContain('Line 9: Final content');
-    expect(outputEvents[1].data).toContain('Line 10: This should be visible');
-    expect(outputEvents[2].data).toContain('Line 11: Last line');
+    expect(outputEvents.length).toBe(4);
+    expect(outputEvents[0].data).toBe('[3J[H');
+    expect(outputEvents[1].data).toContain('Line 9: Final content');
+    expect(outputEvents[2].data).toContain('Line 10: This should be visible');
+    expect(outputEvents[3].data).toContain('Line 11: Last line');
 
     // Should have exit event
     const exitEvent = events.find((e) => e.kind === 'exit');
@@ -127,14 +129,15 @@ describe('CastOutputHub - Asciinema Stream Pruning', () => {
       mockAsciinemaWithClearMidLine.events as TestAsciinemaEvent[]
     );
 
-    // Should only have content after the clear
+    // The clear event is replayed sliced from the sequence onward, followed by "After clear".
     const events = await collectExistingEvents('clear-mid-line');
     const outputEvents = events.filter((e) => e.kind === 'output') as Array<{
       kind: 'output';
       data: string;
     }>;
-    expect(outputEvents.length).toBe(1); // Only "After clear"
-    expect(outputEvents[0].data).toContain('After clear');
+    expect(outputEvents.length).toBe(2);
+    expect(outputEvents[0].data).toBe('[3J in the middle');
+    expect(outputEvents[1].data).toContain('After clear');
   });
 
   it('should not prune streams without clear sequences', async () => {

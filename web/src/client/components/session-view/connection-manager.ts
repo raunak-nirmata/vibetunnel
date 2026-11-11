@@ -103,6 +103,18 @@ export class ConnectionManager {
             return;
           }
 
+          if (e.kind === 'header') {
+            // A header means a fresh replay is starting: drop stale buffered output and
+            // reset the terminal so it picks up the replay's mode preamble cleanly.
+            if (this.batchTimeout !== null) {
+              clearTimeout(this.batchTimeout);
+              this.batchTimeout = null;
+            }
+            this.outputBuffer = '';
+            this.terminal?.reset();
+            return;
+          }
+
           if (e.type === 'git-status-update' && e.sessionId === this.session.id) {
             const updatedSession = {
               ...this.session,

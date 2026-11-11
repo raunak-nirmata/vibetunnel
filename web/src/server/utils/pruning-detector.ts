@@ -22,9 +22,6 @@ const logger = createLogger('PruningDetector');
 export const PRUNE_SEQUENCES = [
   '\x1b[3J', // Clear scrollback buffer (common)
   '\x1bc', // RIS - Full terminal reset
-  '\x1b[2J', // Clear screen (common)
-  '\x1b[H\x1b[J', // Home cursor + clear (older pattern)
-  '\x1b[H\x1b[2J', // Home cursor + clear screen variant
   '\x1b[?1049h', // Enter alternate screen (vim, less, etc)
   '\x1b[?1049l', // Exit alternate screen
   '\x1b[?47h', // Save screen and enter alternate screen (older)
@@ -96,38 +93,6 @@ export function findLastPrunePoint(data: string): { sequence: string; position: 
 }
 
 /**
- * Calculate the exact byte position of a sequence within an asciinema event.
- * This accounts for JSON encoding and the event format: [timestamp, "o", "data"]
- *
- * @param eventStartPos - Byte position where the event starts in the file
- * @param timestamp - Event timestamp
- * @param fullData - Complete data string that will be written
- * @param sequenceIndex - Character index of the sequence in the data
- * @param sequenceLength - Length of the sequence in characters
- * @returns Exact byte position where the sequence ends in the file
- */
-export function calculateSequenceBytePosition(
-  eventStartPos: number,
-  timestamp: number,
-  fullData: string,
-  sequenceIndex: number,
-  sequenceLength: number
-): number {
-  // Calculate the data up to where the sequence ends
-  const dataUpToSequenceEnd = fullData.substring(0, sequenceIndex + sequenceLength);
-
-  // Create the event array prefix: [timestamp,"o","
-  const eventPrefix = JSON.stringify([timestamp, 'o', '']).slice(0, -1); // Remove trailing quote
-  const prefixBytes = Buffer.from(eventPrefix, 'utf8').length;
-
-  // Calculate bytes for the data portion up to sequence end
-  const sequenceBytesInData = Buffer.from(dataUpToSequenceEnd, 'utf8').length;
-
-  // Total position is: event start + prefix bytes + data bytes
-  return eventStartPos + prefixBytes + sequenceBytesInData;
-}
-
-/**
  * Parse an asciinema event line and check for pruning sequences.
  *
  * @param line - JSON line from asciinema file
@@ -174,45 +139,12 @@ export function checkAsciinemaEventForPruning(line: string): {
 }
 
 /**
- * Calculate the byte position of a pruning sequence found in an asciinema file.
- * This is used when scanning existing files to find exact positions.
- *
- * @param fileOffset - Current byte offset in the file
- * @param eventLine - The full JSON line containing the event
- * @param sequenceEndIndex - Character index where the sequence ends in the data
- * @returns Exact byte position where the sequence ends
- */
-export function calculatePruningPositionInFile(
-  fileOffset: number,
-  eventLine: string,
-  sequenceEndIndex: number
-): number {
-  // The fileOffset is at the end of this line
-  // We need to find where within the line the sequence ends
-
-  // Parse the event to get the data
-  const event = JSON.parse(eventLine);
-  const data = event[2];
-
-  // Find where the data portion starts in the JSON string
-  // This is after: [timestamp,"o","
-  const jsonPrefix = JSON.stringify([event[0], event[1], '']).slice(0, -1);
-  const prefixLength = jsonPrefix.length;
-
-  // Calculate how many bytes from start of line to sequence end
-  const dataUpToSequence = data.substring(0, sequenceEndIndex);
-  const dataBytes = Buffer.from(dataUpToSequence, 'utf8').length;
-
-  // The position is: start of line + prefix + data bytes
-  const lineStart = fileOffset - Buffer.from(`${eventLine}\n`, 'utf8').length;
-  return lineStart + prefixLength + dataBytes;
-}
-
-/**
  * Log detection of a pruning sequence in a consistent format.
+ * The position is the start of the event line containing the sequence,
+ * not the sequence itself, so replay can always resume on a line boundary.
  *
  * @param sequence - The detected sequence
- * @param position - Byte position in the file
+ * @param position - Byte position of the start of the event line in the file
  * @param context - Additional context for the log
  */
 export function logPruningDetection(
@@ -222,7 +154,7 @@ export function logPruningDetection(
 ): void {
   const escapedSequence = sequence.split('\x1b').join('\\x1b');
   logger.debug(
-    `Detected pruning sequence '${escapedSequence}' at byte position ${position}` +
+    `Detected pruning sequence '${escapedSequence}' at line-start byte position ${position}` +
       (context ? ` ${context}` : '')
   );
 }
@@ -239,12 +171,6 @@ export function getSequenceDescription(sequence: string): string {
       return 'Clear scrollback buffer';
     case '\x1bc':
       return 'Terminal reset (RIS)';
-    case '\x1b[2J':
-      return 'Clear screen';
-    case '\x1b[H\x1b[J':
-      return 'Home cursor + clear';
-    case '\x1b[H\x1b[2J':
-      return 'Home cursor + clear screen';
     case '\x1b[?1049h':
       return 'Enter alternate screen';
     case '\x1b[?1049l':

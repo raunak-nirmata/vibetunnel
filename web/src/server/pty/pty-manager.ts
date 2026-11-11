@@ -389,7 +389,7 @@ export class PtyManager extends EventEmitter {
           await this.sessionManager.saveSessionInfo(sessionId, sessionInfo);
 
           logger.debug(
-            `Updated lastClearOffset for session ${sessionId} to exact position ${position} ` +
+            `Updated lastClearOffset for session ${sessionId} to line-start position ${position} ` +
               `after detecting pruning sequence '${sequence.split('\x1b').join('\\x1b')}'`
           );
         }

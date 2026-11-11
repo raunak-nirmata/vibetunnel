@@ -82,6 +82,9 @@ export interface DirectKeyboardCallbacks {
   clearCtrlSequence(): void;
   getChatMode(): boolean;
   getKeyboardLocked(): boolean;
+  // TEMPORARY DIAGNOSTIC: feeds the on-screen quick-key probe banner; optional so existing
+  // test doubles don't need updating.
+  reportQuickKeyDebug?(info: string): void;
 }
 
 export class DirectKeyboardManager extends ManagerEventEmitter {
@@ -680,8 +683,18 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     // cause a momentary visualViewport dip before iOS reports the keyboard height again).
     this.lastQuickKeyTimestamp = Date.now();
 
+    // TEMPORARY DIAGNOSTIC (remove once the mobile quick-keys regression is found): reports
+    // how far each press gets, for the on-screen probe rendered in session-view.ts.
+    const hasInputManager = !!this.inputManager;
+    const reportProbe = (branch: string, sendReached: boolean) => {
+      this.callbacks?.reportQuickKeyDebug?.(
+        `key=${key} entered=yes inputMgr=${hasInputManager} branch=${branch} sent=${sendReached}`
+      );
+    };
+
     if (!this.inputManager) {
       logger.error('No input manager found');
+      reportProbe('no-input-manager', false);
       return;
     }
     if (isSpecial && key === 'Done') {
@@ -689,10 +702,12 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       logger.log('Done button pressed - dismissing keyboard');
       // Set a flag to prevent refocus attempts
       this.dismissKeyboard();
+      reportProbe('Done', false);
       return;
     } else if (isModifier && key === 'Control') {
       // Just send Ctrl modifier - don't show the overlay
       // This allows using Ctrl as a modifier with physical keyboard
+      reportProbe('Control-modifier (no-op)', false);
       return;
     } else if (key === 'CtrlFull') {
       // Toggle the full Ctrl+Alpha overlay
@@ -718,6 +733,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
           this.delayedRefocusHiddenInput();
         }
       }
+      reportProbe('CtrlFull', false);
       return;
     } else if (key === 'Paste') {
       // Handle Paste key - following iOS Safari best practices
@@ -742,9 +758,11 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
           if (text && this.inputManager) {
             logger.log('Sending clipboard text to terminal');
             this.inputManager.sendInputText(text);
+            reportProbe('Paste (clipboard API)', true);
             return; // Success - exit early
           } else if (!text) {
             logger.warn('Clipboard is empty or contains no text');
+            reportProbe('Paste (clipboard empty)', false);
             return;
           }
         } catch (err) {
@@ -800,6 +818,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     } else if (key === 'Command') {
       // Command key doesn't have a direct terminal equivalent
       // Could potentially show a message or ignore
+      reportProbe('Command (no-op)', false);
       return;
     } else if (key === 'Delete') {
       // Send delete key
@@ -807,6 +826,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     } else if (key === 'Done') {
       // Safety check - Done should have been handled earlier
       this.dismissKeyboard();
+      reportProbe('Done (safety)', false);
       return;
     } else if (key.startsWith('F')) {
       // Handle function keys F1-F12
@@ -850,6 +870,10 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
         this.inputManager.sendInput(keyToSend.toLowerCase());
       }
     }
+
+    // TEMPORARY DIAGNOSTIC: reached for every branch above that falls through instead of
+    // returning early (Paste native fallback, Ctrl+A..Z, Option, Delete, F-keys, default).
+    reportProbe(`fallthrough key=${key}`, true);
 
     // Always keep focus on hidden input after any key press (except Done)
     // Use requestAnimationFrame to ensure DOM has updated
@@ -1164,11 +1188,13 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
    * This completely disables the keyboard capture to allow other inputs to receive focus
    */
   // Exits keyboard mode and blurs the input; used for chat mode, scroll gestures, and locking.
+  // Does NOT hide the quick keys bar: a scroll should drop the soft keyboard, not the bar the
+  // user asked to see. Callers that also want the bar gone hide it themselves (see dismissKeyboard,
+  // setKeyboardLocked, handleToggleChatMode).
   blurHiddenInput(): void {
     // Exit keyboard mode completely
     this.keyboardMode = false;
     this.keyboardModeTimestamp = 0;
-    this.showQuickKeys = false;
     this.cancelKeyboardReopen();
 
     // Stop focus retention interval - critical to prevent refocusing
@@ -1197,9 +1223,8 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       this.updateHiddenInputPosition();
     }
 
-    // Notify callbacks
+    // Notify callbacks (bar visibility is no longer touched here; see callers that want it hidden)
     if (this.callbacks) {
-      this.callbacks.updateShowQuickKeys(false);
       this.callbacks.setKeyboardHeight(0);
     }
 
@@ -1211,6 +1236,10 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
   setKeyboardLocked(locked: boolean): void {
     if (locked) {
       this.blurHiddenInput();
+      // blurHiddenInput() no longer hides the bar (scroll needs that), so the lock does it
+      // explicitly: locking is a deliberate "put the keyboard away" action.
+      this.showQuickKeys = false;
+      this.callbacks?.updateShowQuickKeys(false);
     }
     this.hiddenInput?.setAttribute('inputmode', locked ? 'none' : 'text');
   }

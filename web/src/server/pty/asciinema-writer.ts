@@ -49,11 +49,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
 import { createLogger, isDebugEnabled } from '../utils/logger.js';
-import {
-  calculateSequenceBytePosition,
-  detectLastPruningSequence,
-  logPruningDetection,
-} from '../utils/pruning-detector.js';
+import { detectLastPruningSequence, logPruningDetection } from '../utils/pruning-detector.js';
 import { WriteQueue } from '../utils/write-queue.js';
 import { type AsciinemaEvent, type AsciinemaHeader, PtyError } from './types.js';
 
@@ -221,56 +217,22 @@ export class AsciinemaWriter {
           data: processedData,
         };
 
-        // Calculate the byte position where the event will start
+        // Line start, so replay can always resume on a line boundary
         const eventStartPos = this.bytesWritten + this.pendingBytes;
 
         // Write the event
         await this.writeEvent(event);
 
-        // Now that the write is complete, handle pruning callback if needed
+        // Report the start of the event's line, not the sequence inside it,
+        // since replay re-parses the line and slices from the sequence itself.
         if (pruningInfo && this.pruningCallback) {
-          // Use shared calculator for exact byte position
-          const exactSequenceEndPos = calculateSequenceBytePosition(
-            eventStartPos,
-            time,
-            processedData,
-            pruningInfo.index,
-            pruningInfo.sequence.length
-          );
+          this.pruningCallback({
+            sequence: pruningInfo.sequence,
+            position: eventStartPos,
+            timestamp: time,
+          });
 
-          // Validate the calculation
-          const eventJson = `${JSON.stringify([time, 'o', processedData])}\n`;
-          const totalEventSize = Buffer.from(eventJson, 'utf8').length;
-          const calculatedEventEndPos = eventStartPos + totalEventSize;
-
-          if (isDebugEnabled()) {
-            _logger.debug(
-              `Pruning sequence byte calculation:\n` +
-                `  Event start position: ${eventStartPos}\n` +
-                `  Event total size: ${totalEventSize} bytes\n` +
-                `  Event end position: ${calculatedEventEndPos}\n` +
-                `  Exact sequence position: ${exactSequenceEndPos}\n` +
-                `  Current file position: ${this.bytesWritten}`
-            );
-          }
-
-          // Sanity check: sequence position should be within the event
-          if (exactSequenceEndPos > calculatedEventEndPos) {
-            _logger.error(
-              `Pruning sequence position calculation error: ` +
-                `sequence position ${exactSequenceEndPos} is beyond event end ${calculatedEventEndPos}`
-            );
-          } else {
-            // Call the callback with the exact position
-            this.pruningCallback({
-              sequence: pruningInfo.sequence,
-              position: exactSequenceEndPos,
-              timestamp: time,
-            });
-
-            // Use shared logging function
-            logPruningDetection(pruningInfo.sequence, exactSequenceEndPos, '(real-time)');
-          }
+          logPruningDetection(pruningInfo.sequence, eventStartPos, '(real-time)');
         }
       }
 

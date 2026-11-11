@@ -92,3 +92,14 @@ The system consists of four main components: a native macOS menu bar application
 - Basic Auth middleware (web/src/server/middleware/auth.ts)
 - Credentials stored in macOS Keychain via DashboardKeychain service
 - Optional password protection for network access
+
+**Scrollback Restore and Mode Preamble**
+- On subscribe, `CastOutputHub.sendExistingContent` (web/src/server/services/cast-output-hub.ts)
+  replays from the last line-start offset past a real clear/alternate-screen boundary, capped
+  to the last 2 MB of the file. If that cap moves the replay start past the client's last
+  `\x1b[?1049h` (enter alternate screen), the hub synthesizes a mode preamble — the screen
+  switch plus any mouse-tracking and kitty keyboard modes seen in the skipped region — so the
+  client ends up in the same terminal mode state regardless of file size. Every replay begins
+  with a `header` event, which the client (web/src/client/components/terminal.ts) treats as a
+  signal to drop buffered output and fully reset the terminal before the replay's own preamble
+  and events are applied.

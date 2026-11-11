@@ -196,6 +196,33 @@ Cell Type Byte:
 └── Bits 1-0: Character type (00=space, 01=ASCII, 10=Unicode)
 ```
 
+#### Replay on Subscribe (`CastOutputHub`)
+
+When a client subscribes to a session's stdout, `CastOutputHub.sendExistingContent`
+(`src/server/services/cast-output-hub.ts`) replays the recorded `.cast` file instead of
+starting from byte 0:
+
+- **Prune sequences**: `PRUNE_SEQUENCES` (`src/server/utils/pruning-detector.ts`) lists the
+  escape sequences that mean "the client no longer needs anything before this point" —
+  `\x1b[3J`, `\x1bc`, and the enter/exit alternate-screen pairs (`\x1b[?1049h/l`,
+  `\x1b[?47h/l`). A bare `\x1b[2J` (clear visible screen only) does *not* qualify — it
+  doesn't discard scrollback, so replaying from it would lose content the client still needs.
+- **Line-start offsets only**: both the real-time writer (`asciinema-writer.ts`) and the
+  retroactive hub scan report/compute the *start of the event's line* that contains a prune
+  sequence, never a byte offset inside the JSON-escaped data. `session.json`'s
+  `lastClearOffset` is always a line boundary, so re-parsing from it can't land mid-string.
+- **2 MB replay cap**: regardless of where the last clear was, replay never sends more than
+  `REPLAY_MAX_BYTES` (2 MB) of the tail, advanced forward to the next line boundary.
+- **Mode preamble**: if the 2 MB window cuts off before the last `\x1b[?1049h` (enter
+  alternate screen), the hub synthesizes a preamble — `\x1b[?1049h` plus any SGR mouse-tracking
+  modes (`\x1b[?1000h/1002h/1003h/1006h`) and kitty keyboard protocol push (`\x1b[>Nu`) seen in
+  the skipped region — so the client's terminal ends up in the same mode state it would have
+  reached by replaying from scratch.
+- **`header` means reset**: every replay starts with a `header` event. On the client,
+  receiving `header` drops any buffered-but-unflushed stdout and calls `terminal.reset()`
+  (`terminal.ts`) before the replay's own preamble and events arrive, so stale state from a
+  previous connection can never bleed into the new one.
+
 ## vibetunnel-fwd (Rust forwarder)
 
 The `vibetunnel-fwd` binary (`native/vt-fwd`) wraps any command in a VibeTunnel session:
