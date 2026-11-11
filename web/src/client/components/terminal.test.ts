@@ -23,14 +23,32 @@ global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
 // Import component type separately
 import type { Terminal } from './terminal';
 
+let encodeSgrWheel: (up: boolean, col: number, row: number) => string;
+
+// File-scoped: runs before every describe block below, including the standalone
+// encodeSgrWheel tests that aren't nested under 'Terminal'.
+beforeAll(async () => {
+  ({ encodeSgrWheel } = await import('./terminal'));
+});
+
+describe('encodeSgrWheel', () => {
+  it('encodes wheel-up as SGR button 64', () => {
+    expect(encodeSgrWheel(true, 5, 12)).toBe('\x1b[<64;5;12M');
+  });
+
+  it('encodes wheel-down as SGR button 65', () => {
+    expect(encodeSgrWheel(false, 5, 12)).toBe('\x1b[<65;5;12M');
+  });
+
+  it('passes through 1-based col/row unchanged', () => {
+    expect(encodeSgrWheel(true, 1, 1)).toBe('\x1b[<64;1;1M');
+    expect(encodeSgrWheel(false, 80, 24)).toBe('\x1b[<65;80;24M');
+  });
+});
+
 describe('Terminal', () => {
   let element: Terminal;
   let mockTerminal: MockTerminal | null;
-
-  beforeAll(async () => {
-    // Import the component to register the custom element after mocks are set up
-    await import('./terminal');
-  });
 
   beforeEach(async () => {
     // Reset viewport
@@ -786,6 +804,111 @@ describe('Terminal', () => {
     it('should preserve pinch zoom while owning one-finger terminal scrolling', () => {
       const container = element.querySelector('.terminal-container') as HTMLElement;
       expect(getComputedStyle(container).touchAction).toBe('pinch-zoom');
+    });
+  });
+
+  describe('mouse wheel forwarding', () => {
+    beforeEach(async () => {
+      await element.firstUpdated();
+      mockTerminal = (element as unknown as { terminal: MockTerminal }).terminal;
+      if (mockTerminal) {
+        mockTerminal.buffer.active.length = 100;
+        // Fixed, round metrics so 3 * charHeight lands on an exact line count.
+        mockTerminal.renderer = {
+          getMetrics: () => ({ width: 10, height: 20 }),
+        } as unknown as MockTerminal['renderer'];
+      }
+    });
+
+    function dispatchPan(startY: number, endY: number) {
+      const container = element.querySelector('.terminal-container') as HTMLElement;
+      const touchStart = new Event('touchstart', { bubbles: true, cancelable: true });
+      Object.defineProperty(touchStart, 'touches', { value: [{ clientX: 50, clientY: startY }] });
+      container.dispatchEvent(touchStart);
+
+      const touchMove = new Event('touchmove', { bubbles: true, cancelable: true });
+      Object.defineProperty(touchMove, 'touches', { value: [{ clientX: 50, clientY: endY }] });
+      container.dispatchEvent(touchMove);
+    }
+
+    it('forwards a one-finger pan as SGR wheel reports when tracking is on, instead of scrolling locally', () => {
+      if (!mockTerminal) return;
+      mockTerminal.hasMouseTracking.mockReturnValue(true);
+      mockTerminal.getMode.mockReturnValue(true);
+
+      const inputHandler = vi.fn();
+      element.addEventListener('terminal-input', inputHandler);
+
+      // 3 lines of travel at charHeight=20: finger moves up (content scrolls forward).
+      dispatchPan(240, 180);
+
+      expect(mockTerminal.scrollLines).not.toHaveBeenCalled();
+      expect(inputHandler).toHaveBeenCalledTimes(3);
+      for (const call of inputHandler.mock.calls) {
+        const detail = (call[0] as CustomEvent<{ text: string }>).detail;
+        expect(detail.text.startsWith('\x1b[<65;')).toBe(true);
+        expect(detail.text.endsWith('M')).toBe(true);
+      }
+    });
+
+    it('falls back to scrollLines when mouse tracking is off', () => {
+      if (!mockTerminal) return;
+      mockTerminal.hasMouseTracking.mockReturnValue(false);
+
+      const inputHandler = vi.fn();
+      element.addEventListener('terminal-input', inputHandler);
+
+      dispatchPan(240, 180);
+
+      expect(inputHandler).not.toHaveBeenCalled();
+      expect(mockTerminal.scrollLines).toHaveBeenCalledWith(3);
+    });
+
+    it('falls back to scrollLines when tracking is on but SGR (?1006) is not', () => {
+      if (!mockTerminal) return;
+      mockTerminal.hasMouseTracking.mockReturnValue(true);
+      mockTerminal.getMode.mockReturnValue(false);
+
+      const inputHandler = vi.fn();
+      element.addEventListener('terminal-input', inputHandler);
+
+      dispatchPan(240, 180);
+
+      expect(inputHandler).not.toHaveBeenCalled();
+      expect(mockTerminal.scrollLines).toHaveBeenCalledWith(3);
+    });
+
+    it('registers a custom wheel handler that forwards SGR reports and defers to ghostty-web otherwise', () => {
+      if (!mockTerminal) return;
+      expect(mockTerminal.attachCustomWheelEventHandler).toHaveBeenCalledOnce();
+      const handler = mockTerminal.attachCustomWheelEventHandler.mock.calls[0][0] as (
+        event: WheelEvent
+      ) => boolean;
+
+      const inputHandler = vi.fn();
+      element.addEventListener('terminal-input', inputHandler);
+
+      // happy-dom's WheelEvent constructor ignores clientX/clientY from the init dict.
+      function wheelEventAt(deltaY: number, clientX: number, clientY: number): WheelEvent {
+        const event = new WheelEvent('wheel', { deltaY });
+        Object.defineProperty(event, 'clientX', { value: clientX });
+        Object.defineProperty(event, 'clientY', { value: clientY });
+        return event;
+      }
+
+      mockTerminal.hasMouseTracking.mockReturnValue(false);
+      const notTracked = wheelEventAt(100, 10, 10);
+      expect(handler(notTracked)).toBe(false);
+      expect(inputHandler).not.toHaveBeenCalled();
+
+      mockTerminal.hasMouseTracking.mockReturnValue(true);
+      mockTerminal.getMode.mockReturnValue(true);
+      const tracked = wheelEventAt(60, 10, 10);
+      expect(handler(tracked)).toBe(true);
+      expect(inputHandler).toHaveBeenCalledTimes(3);
+      const detail = (inputHandler.mock.calls[0][0] as CustomEvent<{ text: string }>).detail;
+      expect(detail.text.startsWith('\x1b[<65;')).toBe(true);
+      expect(detail.text.endsWith('M')).toBe(true);
     });
   });
 

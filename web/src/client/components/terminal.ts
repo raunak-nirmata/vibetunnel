@@ -27,10 +27,20 @@ const TAP_MAX_MOVEMENT_PX = 10;
 const TAP_MAX_DURATION_MS = 350;
 const TAP_CLICK_SUPPRESS_MS = 700;
 
+// How many SGR wheel reports to send per line of scroll travel when forwarding to an
+// app with mouse tracking on (e.g. Claude Code). Bump this if scrolling feels slow.
+const WHEEL_REPORTS_PER_LINE = 1;
+
 let ghosttyPromise: Promise<Ghostty> | null = null;
 async function ensureGhostty(): Promise<Ghostty> {
   if (!ghosttyPromise) ghosttyPromise = Ghostty.load('/ghostty-vt.wasm');
   return ghosttyPromise;
+}
+
+/** Encodes an SGR (`?1006h`) mouse wheel report; `col`/`row` are 1-based cells. */
+export function encodeSgrWheel(up: boolean, col: number, row: number): string {
+  const button = up ? 64 : 65;
+  return `\x1b[<${button};${col};${row}M`;
 }
 
 type TerminalResizeDetail = {
@@ -78,6 +88,7 @@ export class Terminal extends LitElement {
   private lastTouchY = 0;
   private touchScrollRemainder = 0;
   private touchScrolling = false;
+  private wheelScrollRemainder = 0;
   private touchStartTime = 0;
   private touchSingleThroughout = true;
   private suppressClickUntil = 0;
@@ -360,10 +371,82 @@ export class Terminal extends LitElement {
     this.lastTouchY = touch.clientY;
 
     if (lines !== 0) {
-      this.terminal?.scrollLines(lines);
+      if (this.shouldForwardWheel()) {
+        this.dispatchWheelReports(lines, touch.clientX, touch.clientY);
+      } else {
+        this.terminal?.scrollLines(lines);
+      }
       this.touchScrollRemainder -= lines * lineHeight;
     }
   };
+
+  /**
+   * True only when the app has enabled a mouse tracking mode (`?1000h`/`?1002h`/`?1003h`)
+   * *and* SGR encoding (`?1006h`), which is what Claude Code enables and what
+   * `encodeSgrWheel` emits. hasMouseTracking() alone is true for e.g. X10-only tracking,
+   * which expects a different (non-SGR) report format we don't encode.
+   */
+  private shouldForwardWheel(): boolean {
+    return !!this.terminal?.hasMouseTracking() && !!this.terminal?.getMode(1006, false);
+  }
+
+  /**
+   * ghostty-web's canvas already owns native `wheel` events (it sends arrow keys on the
+   * alternate screen and smooth-scrolls local scrollback otherwise - see its own
+   * `handleWheel`). Its `attachCustomWheelEventHandler` hook exists for exactly this:
+   * returning true here skips that built-in behavior so we never double-handle a wheel
+   * event; returning false lets ghostty-web's own fallback run unchanged.
+   */
+  private handleWheel = (event: WheelEvent): boolean => {
+    if (!this.terminal || !this.shouldForwardWheel()) return false;
+
+    const lineHeight = Math.max(
+      1,
+      this.terminal.renderer?.getMetrics().height ?? this.fontSize * 1.2
+    );
+    this.wheelScrollRemainder += event.deltaY;
+    const lines = Math.trunc(this.wheelScrollRemainder / lineHeight);
+    if (lines === 0) return true;
+
+    this.wheelScrollRemainder -= lines * lineHeight;
+    this.dispatchWheelReports(lines, event.clientX, event.clientY);
+    return true;
+  };
+
+  /** Resolves a client point to a 1-based terminal cell for mouse reports. */
+  private pointToCell(clientX: number, clientY: number): { col: number; row: number } {
+    const renderer = this.terminal?.renderer;
+    const metrics = renderer?.getMetrics();
+    const charWidth = metrics?.width || renderer?.charWidth || 8;
+    const charHeight = metrics?.height || renderer?.charHeight || this.fontSize * 1.2;
+    const rect = this.container?.getBoundingClientRect();
+
+    const col = Math.floor((clientX - (rect?.left ?? 0)) / charWidth) + 1;
+    const row = Math.floor((clientY - (rect?.top ?? 0)) / charHeight) + 1;
+    const maxCol = Number.isFinite(this.cols) && this.cols > 0 ? this.cols : col;
+    const maxRow = Number.isFinite(this.rows) && this.rows > 0 ? this.rows : row;
+
+    return {
+      col: Math.min(Math.max(1, col), Math.max(1, maxCol)),
+      row: Math.min(Math.max(1, row), Math.max(1, maxRow)),
+    };
+  }
+
+  /** `lines` negative = scroll up (wheel-up/button 64), positive = scroll down (wheel-down/button 65). */
+  private dispatchWheelReports(lines: number, clientX: number, clientY: number) {
+    const { col, row } = this.pointToCell(clientX, clientY);
+    const up = lines < 0;
+    const reportCount = Math.abs(lines) * WHEEL_REPORTS_PER_LINE;
+
+    for (let i = 0; i < reportCount; i++) {
+      this.dispatchEvent(
+        new CustomEvent('terminal-input', {
+          detail: { text: encodeSgrWheel(up, col, row) },
+          bubbles: true,
+        })
+      );
+    }
+  }
 
   private resetTouchScroll = () => {
     // Covers touchend, touchcancel, and the mid-gesture multi-finger bailout in touchstart.
@@ -494,6 +577,7 @@ export class Terminal extends LitElement {
     this.container = null;
     this.pasteInput = null;
     this.preservedScrollPosition = null;
+    this.wheelScrollRemainder = 0;
   }
 
   private requestResize(source: string) {
@@ -640,6 +724,8 @@ export class Terminal extends LitElement {
       term.open(container);
       this.suppressGhosttySoftKeyboard(container);
       term.registerLinkProvider(new KeyboardShortcutLinkProvider(term, this.handleShortcutClick));
+      // Desktop/trackpad scroll forwarding; see handleWheel's doc comment for why this hook.
+      term.attachCustomWheelEventHandler(this.handleWheel);
 
       this.terminal = term;
       this.fitAddon = fitAddon;

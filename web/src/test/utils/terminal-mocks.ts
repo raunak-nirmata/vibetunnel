@@ -151,6 +151,10 @@ export class MockTerminal {
 
   getViewportY = vi.fn(() => this.buffer.active.viewportY);
 
+  hasMouseTracking = vi.fn(() => false);
+  getMode = vi.fn(() => true);
+  attachCustomWheelEventHandler = vi.fn();
+
   select = vi.fn();
 
   selectAll = vi.fn();

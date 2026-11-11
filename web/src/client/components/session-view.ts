@@ -14,7 +14,7 @@
  * @listens browser-cancel - From file browser when cancelled
  */
 import { html, LitElement, type PropertyValues } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
 import type { Session } from '../../shared/types.js';
 import './clickable-path.js';
 import './session-view/session-header.js';
@@ -75,9 +75,6 @@ export class SessionView extends LitElement {
   @property({ type: Boolean }) sidebarCollapsed = false;
   @property({ type: Boolean }) disableFocusManagement = false;
   @property({ type: Boolean }) keyboardCaptureActive = true;
-
-  // TEMPORARY DIAGNOSTIC: on-screen quick-key probe banner; remove with reportQuickKeyDebug.
-  @state() private quickKeyDebugProbe = 'no quick-key press yet';
 
   // Managers
   private connectionManager!: ConnectionManager;
@@ -358,10 +355,6 @@ export class SessionView extends LitElement {
       },
       getChatMode: () => this.uiStateManager.getState().chatMode,
       getKeyboardLocked: () => this.uiStateManager.getState().keyboardLocked,
-      // TEMPORARY DIAGNOSTIC
-      reportQuickKeyDebug: (info: string) => {
-        this.quickKeyDebugProbe = `${new Date().toLocaleTimeString()} ${info}`;
-      },
     };
     this.directKeyboardManager.setCallbacks(directKeyboardCallbacks);
 
@@ -1436,10 +1429,6 @@ export class SessionView extends LitElement {
           -webkit-tap-highlight-color: transparent;
         }
       </style>
-      <!-- TEMPORARY DIAGNOSTIC: quick-key probe banner, remove once the regression is found -->
-      <div
-        style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c06;color:#fff;font:11px/1.3 monospace;padding:3px 5px;pointer-events:none;word-break:break-all;"
-      >QUICK-KEY: ${this.quickKeyDebugProbe}</div>
       <!-- Background wrapper to extend header color to status bar -->
       <div class="bg-bg-secondary" style="padding-top: env(safe-area-inset-top);">
         <div
