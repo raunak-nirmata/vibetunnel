@@ -6,6 +6,7 @@ import { TerminalLifecycleManager } from './terminal-lifecycle-manager.js';
 
 const terminalSocketClientMock = vi.hoisted(() => ({
   resize: vi.fn().mockReturnValue(true),
+  release: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock('../../services/terminal-socket-client.js', () => ({
@@ -69,6 +70,7 @@ describe('TerminalLifecycleManager resume path', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     terminalSocketClientMock.resize.mockClear();
+    terminalSocketClientMock.release.mockClear();
     manager = new TerminalLifecycleManager();
     manager.setSession(createMockSession({ status: 'running' }));
     manager.setupTerminal();
@@ -121,16 +123,34 @@ describe('TerminalLifecycleManager resume path', () => {
     expect(terminalSocketClientMock.resize).toHaveBeenCalledWith(expect.any(String), 133, 20);
   });
 
-  it('removes the resume listeners on cleanup', () => {
+  it('removes the resume and release listeners on cleanup', () => {
     const removeWindowSpy = vi.spyOn(window, 'removeEventListener');
     const removeDocSpy = vi.spyOn(document, 'removeEventListener');
 
     manager.cleanup();
 
     expect(removeWindowSpy).toHaveBeenCalledWith('pageshow', expect.any(Function));
+    expect(removeWindowSpy).toHaveBeenCalledWith('pagehide', expect.any(Function));
     expect(removeDocSpy).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
 
     removeWindowSpy.mockRestore();
     removeDocSpy.mockRestore();
+  });
+
+  it('sends exactly one RESIZE_RELEASE on visibilitychange to hidden', () => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    expect(terminalSocketClientMock.release).toHaveBeenCalledTimes(1);
+    expect(terminalSocketClientMock.release).toHaveBeenCalledWith(expect.any(String));
+  });
+
+  it('sends a release on pagehide', () => {
+    window.dispatchEvent(new Event('pagehide'));
+
+    expect(terminalSocketClientMock.release).toHaveBeenCalledTimes(1);
   });
 });

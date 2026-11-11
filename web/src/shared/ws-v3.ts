@@ -31,6 +31,7 @@ export enum WsV3MessageType {
   RESIZE = 32,
   KILL = 33,
   RESET_SIZE = 34,
+  RESIZE_RELEASE = 35,
 
   PING = 40,
   PONG = 41,

@@ -385,4 +385,113 @@ describe('WsV3Hub', () => {
       gitBranch: 'main',
     });
   });
+
+  describe('resize arbitration', () => {
+    function subscribe(ws: FakeWebSocket, sessionId: string) {
+      hub.handleClientConnection(ws as unknown as WebSocket, {} as unknown as WebSocketRequestV3);
+      sendBinaryFrame(
+        ws,
+        encodeWsV3Frame({
+          type: WsV3MessageType.SUBSCRIBE,
+          sessionId,
+          payload: encodeWsV3SubscribePayload({ flags: WsV3SubscribeFlags.Stdout }),
+        })
+      );
+    }
+
+    function resize(ws: FakeWebSocket, sessionId: string, cols: number, rows: number) {
+      sendBinaryFrame(
+        ws,
+        encodeWsV3Frame({
+          type: WsV3MessageType.RESIZE,
+          sessionId,
+          payload: encodeWsV3ResizePayload(cols, rows),
+        })
+      );
+    }
+
+    function release(ws: FakeWebSocket, sessionId: string) {
+      sendBinaryFrame(
+        ws,
+        encodeWsV3Frame({
+          type: WsV3MessageType.RESIZE_RELEASE,
+          sessionId,
+          payload: new Uint8Array(),
+        })
+      );
+    }
+
+    it('applies the min of two subscribers resizes', async () => {
+      const wsA = new FakeWebSocket();
+      const wsB = new FakeWebSocket();
+      subscribe(wsA, 's1');
+      subscribe(wsB, 's1');
+      await flush();
+
+      resize(wsA, 's1', 100, 40);
+      await flush();
+      resize(wsB, 's1', 60, 30);
+      await flush();
+
+      expect(ptyManager.resizeSession).toHaveBeenLastCalledWith('s1', 60, 30);
+    });
+
+    it('falls back to the other subscriber size on release', async () => {
+      const wsA = new FakeWebSocket();
+      const wsB = new FakeWebSocket();
+      subscribe(wsA, 's1');
+      subscribe(wsB, 's1');
+      await flush();
+
+      resize(wsA, 's1', 100, 40);
+      await flush();
+      resize(wsB, 's1', 60, 30);
+      await flush();
+
+      release(wsB, 's1');
+      await flush();
+
+      expect(ptyManager.resizeSession).toHaveBeenLastCalledWith('s1', 100, 40);
+    });
+
+    it('resets the session size once when the last holder closes', async () => {
+      const wsA = new FakeWebSocket();
+      const wsB = new FakeWebSocket();
+      subscribe(wsA, 's1');
+      subscribe(wsB, 's1');
+      await flush();
+
+      resize(wsA, 's1', 100, 40);
+      await flush();
+      resize(wsB, 's1', 60, 30);
+      await flush();
+
+      (ptyManager.resetSessionSize as ReturnType<typeof vi.fn>).mockClear();
+
+      release(wsA, 's1');
+      await flush();
+      expect(ptyManager.resetSessionSize).not.toHaveBeenCalled();
+
+      wsB.close();
+      await flush();
+
+      expect(ptyManager.resetSessionSize).toHaveBeenCalledTimes(1);
+      expect(ptyManager.resetSessionSize).toHaveBeenCalledWith('s1');
+    });
+
+    it('treats a release with no held size as a no-op', async () => {
+      const ws = new FakeWebSocket();
+      subscribe(ws, 's1');
+      await flush();
+
+      (ptyManager.resetSessionSize as ReturnType<typeof vi.fn>).mockClear();
+      (ptyManager.resizeSession as ReturnType<typeof vi.fn>).mockClear();
+
+      release(ws, 's1');
+      await flush();
+
+      expect(ptyManager.resetSessionSize).not.toHaveBeenCalled();
+      expect(ptyManager.resizeSession).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -946,7 +946,9 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
     }
   });
 
-  // Resize session
+  // Resize session.
+  // Bypasses WsV3Hub size arbitration: last-wins and untracked, same as a client
+  // that resizes before subscribing. Used only when the v3 socket is down.
   router.post('/sessions/:sessionId/resize', async (req, res) => {
     const sessionId = req.params.sessionId;
     const { cols, rows } = req.body;

@@ -11,6 +11,7 @@
 - Stopped a scroll that starts on the mobile action bar from firing the button it started on, which could raise the on-screen keyboard mid-scroll.
 - Shrank the mobile action bar to icon-only buttons, moved it to the bottom-right corner, and faded it out while the terminal is mid-scroll-gesture so it covers less of the terminal.
 - Routed every hidden-input focus request on mobile through one gate, so dismissing the iOS keyboard keeps it dismissed instead of the app refocusing it mid-scroll or mid-dismiss.
+- Let the smallest attached browser win a session's PTY size while it's in the foreground, and restored the host terminal's own size automatically once the phone goes to background or its tab closes, instead of the PTY staying stuck at whichever client resized it last.
 
 ## [1.0.0-beta.18] - 2026-07-11
 

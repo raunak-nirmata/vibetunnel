@@ -167,7 +167,7 @@ interface BufferSnapshot {
  * ```
  *
  * @see GhosttyTerminal - Terminal emulation engine
- * @see web/src/server/services/buffer-aggregator.ts - Aggregates buffer updates
+ * @see web/src/server/services/ws-v3-hub.ts - Sends buffer updates to subscribed clients
  * @see web/src/server/pty/asciinema-writer.ts - Writes asciinema streams
  */
 export class TerminalManager {

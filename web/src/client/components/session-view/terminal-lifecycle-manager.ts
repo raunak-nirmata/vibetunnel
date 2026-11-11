@@ -95,6 +95,7 @@ export class TerminalLifecycleManager {
     // Terminal element will be created in render()
     // We'll initialize it in updated() after first render
     window.addEventListener('pageshow', this.handlePageShow);
+    window.addEventListener('pagehide', this.handlePageHide);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
   }
 
@@ -255,8 +256,20 @@ export class TerminalLifecycleManager {
     if (event.persisted) this.handleResume();
   };
 
+  // Mirror of handleResume: drop the held size so the hub can fall back to
+  // another subscriber or restore the host once this tab stops being the winner.
+  private handleRelease = () => {
+    if (this.session) terminalSocketClient.release(this.session.id);
+  };
+
+  private handlePageHide = () => this.handleRelease();
+
   private handleVisibilityChange = () => {
-    if (document.visibilityState === 'visible') this.handleResume();
+    if (document.visibilityState === 'visible') {
+      this.handleResume();
+    } else if (document.visibilityState === 'hidden') {
+      this.handleRelease();
+    }
   };
 
   handleTerminalPaste(e: Event) {
@@ -307,6 +320,7 @@ export class TerminalLifecycleManager {
     }
 
     window.removeEventListener('pageshow', this.handlePageShow);
+    window.removeEventListener('pagehide', this.handlePageHide);
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
 
     if (this.terminal && this.eventHandlers) {

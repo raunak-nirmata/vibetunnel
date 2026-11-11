@@ -36,6 +36,8 @@ type ClientSessionSub = {
   unsubscribeSnapshots?: () => void;
   unsubscribeGit?: () => void;
   remoteId?: string;
+  // The size this socket last asked for; dropped on release/unsubscribe/close.
+  size?: { cols: number; rows: number };
 };
 
 type ClientState = {
@@ -169,7 +171,13 @@ export class WsV3Hub {
         if (!sessionId) throw new Error('Missing sessionId for RESIZE');
         const dims = decodeWsV3ResizePayload(payload);
         if (!dims) throw new Error('Invalid RESIZE payload');
-        await this.forwardResize(sessionId, dims.cols, dims.rows);
+        await this.handleResize(ws, sessionId, dims.cols, dims.rows);
+        return;
+      }
+
+      case WsV3MessageType.RESIZE_RELEASE: {
+        if (!sessionId) throw new Error('Missing sessionId for RESIZE_RELEASE');
+        await this.handleResizeRelease(ws, sessionId);
         return;
       }
 
@@ -200,6 +208,9 @@ export class WsV3Hub {
     if (!state) return;
 
     const existing = state.subs.get(sessionId);
+    // Carry the held size across a flags change so a mid-session resubscribe
+    // doesn't bounce the host to full width until the next client resize.
+    const existingSize = existing?.size;
     if (existing) {
       // Update flags (unsubscribe/resubscribe as needed)
       this.unsubscribe(ws, sessionId);
@@ -231,12 +242,13 @@ export class WsV3Hub {
         : undefined;
 
     if (isRemote) {
-      state.subs.set(sessionId, { flags, remoteId: isRemote.id });
+      state.subs.set(sessionId, { flags, remoteId: isRemote.id, size: existingSize });
       this.addRemoteSubscriber(ws, sessionId, flags, isRemote.id);
+      if (existingSize) await this.applySessionSize(sessionId);
       return;
     }
 
-    const sub: ClientSessionSub = { flags };
+    const sub: ClientSessionSub = { flags, size: existingSize };
     state.subs.set(sessionId, sub);
 
     if (flags & WsV3SubscribeFlags.Stdout) {
@@ -331,6 +343,8 @@ export class WsV3Hub {
     if (flags & WsV3SubscribeFlags.Events) {
       this.attachGitWatcher(ws, sessionId, sub);
     }
+
+    if (existingSize) await this.applySessionSize(sessionId);
   }
 
   private attachGitWatcher(ws: WebSocket, sessionId: string, sub: ClientSessionSub) {
@@ -384,7 +398,11 @@ export class WsV3Hub {
     sub.unsubscribeSnapshots?.();
     sub.unsubscribeGit?.();
 
+    const hadSize = !!sub.size;
     state.subs.delete(sessionId);
+
+    // Recompute arbitration: this socket no longer holds a size for the session.
+    if (hadSize) void this.applySessionSize(sessionId);
   }
 
   private cleanupClient(ws: WebSocket) {
@@ -435,6 +453,50 @@ export class WsV3Hub {
     }
 
     this.config.ptyManager.resizeSession(sessionId, cols, rows);
+  }
+
+  private async handleResize(ws: WebSocket, sessionId: string, cols: number, rows: number) {
+    const sub = this.getClientState(ws)?.subs.get(sessionId);
+    if (!sub) {
+      // No subscription to hold the size on (e.g. resize before subscribe):
+      // fall back to untracked last-wins, same posture as the HTTP route.
+      await this.forwardResize(sessionId, cols, rows);
+      return;
+    }
+
+    sub.size = { cols, rows };
+    await this.applySessionSize(sessionId);
+  }
+
+  private async handleResizeRelease(ws: WebSocket, sessionId: string) {
+    const sub = this.getClientState(ws)?.subs.get(sessionId);
+    if (!sub?.size) return; // nothing held: harmless no-op
+
+    sub.size = undefined;
+    await this.applySessionSize(sessionId);
+  }
+
+  // The smallest attached browser wins: PTY size is the min cols/rows held by
+  // any subscriber of this session. When nobody holds a size, restore the host.
+  private async applySessionSize(sessionId: string) {
+    if (!sessionId) return;
+
+    let minCols: number | null = null;
+    let minRows: number | null = null;
+
+    for (const ws of this.clientSockets) {
+      const size = this.getClientState(ws)?.subs.get(sessionId)?.size;
+      if (!size) continue;
+      minCols = minCols === null ? size.cols : Math.min(minCols, size.cols);
+      minRows = minRows === null ? size.rows : Math.min(minRows, size.rows);
+    }
+
+    if (minCols === null || minRows === null) {
+      this.forwardResetSize(sessionId);
+      return;
+    }
+
+    await this.forwardResize(sessionId, minCols, minRows);
   }
 
   private async forwardKill(sessionId: string, signal: string | number) {

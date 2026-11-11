@@ -315,6 +315,14 @@ export class TerminalSocketClient {
     return true;
   }
 
+  // Drops the size this socket holds for the session, so the hub can fall back
+  // to another subscriber's size or restore the host.
+  release(sessionId: string): boolean {
+    if (!sessionId) return false;
+    this.sendFrame(encodeWsV3Frame({ type: WsV3MessageType.RESIZE_RELEASE, sessionId }));
+    return true;
+  }
+
   private handleBinary(data: ArrayBuffer) {
     const frame = decodeWsV3Frame(new Uint8Array(data));
     if (!frame) return;

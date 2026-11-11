@@ -61,7 +61,7 @@ const logger = createLogger('hq-client');
  * ```
  *
  * @see web/src/server/services/remote-registry.ts for HQ-side registry
- * @see web/src/server/services/buffer-aggregator.ts for cross-server buffer streaming
+ * @see web/src/server/services/ws-v3-hub.ts for cross-server buffer streaming
  * @see web/src/server/server.ts for HQ mode initialization
  */
 /**

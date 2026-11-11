@@ -32,6 +32,7 @@ Client → Server:
 - `RESIZE` payload = `u32 colsLE` + `u32 rowsLE`
 - `KILL` payload = UTF-8 signal (default `SIGTERM`)
 - `RESET_SIZE` payload empty
+- `RESIZE_RELEASE` payload empty
 - `PING` payload optional
 
 Server → Client:
@@ -64,10 +65,17 @@ Payload is the existing **VT snapshot v1** byte format (magic `VT`, version `1`)
 - Web client transport: `web/src/client/services/terminal-socket-client.ts`
 - iOS transport: `ios/VibeTunnel/Services/BufferWebSocketClient.swift`
 
+## Resize arbitration
+The PTY has one size per session. Each subscriber socket can hold a `cols`/`rows` size
+via `RESIZE`; the hub applies the minimum across every socket that currently holds one.
+A socket drops its held size on `RESIZE_RELEASE`, `UNSUBSCRIBE`, or disconnect; once no
+socket holds a size, the hub resets the session to its host terminal's size.
+
 ## HQ mode
 HQ uses the same `/ws` v3 frames.
 - HQ keeps one upstream WS per remote.
 - Downstream subscriptions aggregate flags per session and fan out frames to clients.
+- Resize arbitration runs on HQ's own downstream sockets; the remote sees HQ as one client.
 
 ## Removed legacy transports
 - `/buffers` (v2 `0xBF` framing)
