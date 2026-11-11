@@ -15,6 +15,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { KeyboardShortcutLinkProvider } from '../utils/keyboard-shortcut-link-provider.js';
 import { createLogger } from '../utils/logger.js';
 import { TERMINAL_FONT_FAMILY, TERMINAL_IDS } from '../utils/terminal-constants.js';
+import { BREAKPOINTS } from '../utils/constants.js';
 import { TerminalPreferencesManager } from '../utils/terminal-preferences.js';
 import { TERMINAL_THEMES, type TerminalThemeId } from '../utils/terminal-themes.js';
 import { getCurrentTheme } from '../utils/theme-utils.js';
@@ -368,6 +369,21 @@ export class Terminal extends LitElement {
    * any focused input/textarea/contenteditable, scoped to the terminal area so a rename
    * field, file-browser filter, or modal input elsewhere on the page is never touched.
    */
+  /**
+   * ghostty-web creates its own textarea inside the container to receive key events. On a
+   * phone that textarea is what raises the iOS keyboard, and it is outside every input path
+   * VibeTunnel controls, so neither the focus gate nor the keyboard lock can reach it.
+   * Typing is delivered through our own hidden input, so the terminal's textarea only ever
+   * needs to accept hardware keys — inputmode="none" keeps those working while stopping iOS
+   * from opening the soft keyboard whenever ghostty focuses it.
+   */
+  private suppressGhosttySoftKeyboard(container: HTMLElement) {
+    if (window.innerWidth >= BREAKPOINTS.MOBILE) return;
+    for (const ta of container.querySelectorAll('textarea')) {
+      ta.setAttribute('inputmode', 'none');
+    }
+  }
+
   private blurFocusedInput() {
     const active = document.activeElement;
     if (!(active instanceof HTMLElement)) return;
@@ -610,6 +626,7 @@ export class Terminal extends LitElement {
       // Fresh mount
       container.innerHTML = '';
       term.open(container);
+      this.suppressGhosttySoftKeyboard(container);
       term.registerLinkProvider(new KeyboardShortcutLinkProvider(term, this.handleShortcutClick));
 
       this.terminal = term;
