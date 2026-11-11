@@ -354,6 +354,7 @@ export class SessionView extends LitElement {
         this.requestUpdate();
       },
       getChatMode: () => this.uiStateManager.getState().chatMode,
+      getKeyboardLocked: () => this.uiStateManager.getState().keyboardLocked,
     };
     this.directKeyboardManager.setCallbacks(directKeyboardCallbacks);
 
@@ -765,6 +766,11 @@ export class SessionView extends LitElement {
     this.uiStateManager.toggleChatMode();
   }
   private handleKeyboardButtonClick() {
+    if (this.uiStateManager.getState().keyboardLocked) {
+      this.handleHapticFeedback('medium');
+      return;
+    }
+
     // Show quick keys immediately for visual feedback
     this.uiStateManager.setShowQuickKeys(true);
 
@@ -778,6 +784,17 @@ export class SessionView extends LitElement {
     this.directKeyboardManager.focusHiddenInput(true);
 
     // Request update after all synchronous operations
+    this.requestUpdate();
+  }
+
+  private handleKeyboardLockToggle() {
+    const locked = !this.uiStateManager.getState().keyboardLocked;
+    // UI state first: the focus gate reads keyboardLocked through this callback, so
+    // flipping it before direct-keyboard-manager acts closes the window for a retention
+    // tick to grant focus in between the two.
+    this.uiStateManager.setKeyboardLocked(locked);
+    this.directKeyboardManager.setKeyboardLocked(locked);
+    this.handleHapticFeedback('medium');
     this.requestUpdate();
   }
 
@@ -1563,6 +1580,7 @@ export class SessionView extends LitElement {
             .keyboardVisible=${uiState.keyboardHeight > 0}
             .keyboardHeight=${uiState.keyboardHeight}
             .currentMode=${'normal'}
+            .keyboardLocked=${uiState.keyboardLocked}
             .callbacks=${(() => {
               const callbacks = {
                 // Command palette callbacks
@@ -1602,6 +1620,7 @@ export class SessionView extends LitElement {
                 onSendInput: (text: string) => this.handleSendInput(text),
                 onTriggerHaptic: (type: 'light' | 'medium' | 'heavy') =>
                   this.handleHapticFeedback(type),
+                onToggleKeyboardLock: () => this.handleKeyboardLockToggle(),
               };
               return callbacks;
             })()}

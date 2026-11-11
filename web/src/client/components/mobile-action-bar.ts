@@ -11,10 +11,9 @@
  *
  * Features:
  * - Touch-friendly 44px minimum targets
- * - Swipe gestures support
+ * - Keyboard lock toggle (suppresses the soft keyboard; see direct-keyboard-manager.ts)
  * - Long-press actions
  * - Haptic feedback
- * - Adaptive layout based on screen size
  */
 import { html, LitElement } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -41,6 +40,7 @@ export interface MobileActionBarCallbacks
   onHideKeyboard?: () => void;
   onToggleActionBar?: () => void;
   onTriggerHaptic?: (type: 'light' | 'medium' | 'heavy') => void;
+  onToggleKeyboardLock?: () => void;
 }
 
 interface ActionButton {
@@ -74,6 +74,7 @@ export class MobileActionBar extends LitElement {
   @property({ type: Number }) keyboardHeight = 0;
   // Faded out while the terminal is mid-scroll-gesture so a drag that starts on a button doesn't fire it.
   @property({ type: Boolean }) hidden = false;
+  @property({ type: Boolean }) keyboardLocked = false;
 
   @state() private showCommandPalette = false;
   @state() private showClipboardManager = false;
@@ -100,6 +101,13 @@ export class MobileActionBar extends LitElement {
     //   highlight: true,
     //   category: 'primary',
     // },
+    {
+      id: 'keyboard-lock',
+      title: 'Lock Keyboard',
+      icon: '🔓',
+      action: 'onToggleKeyboardLock',
+      category: 'primary',
+    },
     {
       id: 'clipboard',
       title: 'Clipboard',
@@ -206,6 +214,13 @@ export class MobileActionBar extends LitElement {
     event.preventDefault();
     event.stopPropagation();
 
+    // Inert while locked: no long-press timer, no action — just feedback that it's locked.
+    if (button.id === 'keyboard' && this.keyboardLocked) {
+      logger.debug('Keyboard button press ignored: locked');
+      this.triggerHaptic('medium');
+      return;
+    }
+
     logger.debug(`Button pressed: ${button.id}`);
     this.triggerHaptic('light');
 
@@ -238,6 +253,11 @@ export class MobileActionBar extends LitElement {
   private handleButtonRelease(button: ActionButton, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
+
+    // Press already short-circuited; never set a timer, so release has nothing to do.
+    if (button.id === 'keyboard' && this.keyboardLocked) {
+      return;
+    }
 
     const movedX = Math.abs(event.clientX - this.pressStartX);
     const movedY = Math.abs(event.clientY - this.pressStartY);
@@ -367,14 +387,25 @@ export class MobileActionBar extends LitElement {
         <!-- Primary Actions (Always Visible) -->
         <div class="bg-bg/90 backdrop-blur-lg border border-border/50 rounded-full shadow-2xl p-1">
           <div class="flex items-center gap-2 p-0.5">
-            ${this.primaryActions.map(
-              (button) => html`
+            ${this.primaryActions.map((button) => {
+              const isLockButton = button.id === 'keyboard-lock';
+              const isKeyboardButton = button.id === 'keyboard';
+              const dimInert = isKeyboardButton && this.keyboardLocked;
+              const highlighted = (isLockButton && this.keyboardLocked) || button.highlight;
+              const icon = isLockButton ? (this.keyboardLocked ? '🔒' : '🔓') : button.icon;
+              const title = isLockButton
+                ? this.keyboardLocked
+                  ? 'Unlock Keyboard'
+                  : 'Lock Keyboard'
+                : button.title;
+              return html`
               <button
+                id="mobile-action-${button.id}"
                 class="relative flex items-center justify-center w-10 h-10 rounded-xl transition-all duration-200 ${
-                  button.highlight
+                  highlighted
                     ? 'bg-primary/20 border border-primary/30 text-primary'
                     : 'bg-bg-secondary/80 hover:bg-surface-hover text-text hover:text-primary'
-                } active:scale-95 touch-manipulation"
+                } active:scale-95 touch-manipulation ${dimInert ? 'opacity-40' : ''}"
                 @pointerdown=${(e: PointerEvent) => this.handleButtonPress(button, e)}
                 @pointermove=${(e: PointerEvent) => this.handleButtonMove(e)}
                 @pointerup=${(e: PointerEvent) => this.handleButtonRelease(button, e)}
@@ -384,10 +415,11 @@ export class MobileActionBar extends LitElement {
                     this.longPressTimer = null;
                   }
                 }}
-                title="${button.title}${button.longPressAction ? ' (Long press for more)' : ''}"
-                aria-label="${button.title}"
+                title="${title}${button.longPressAction ? ' (Long press for more)' : ''}"
+                aria-label="${title}"
+                aria-disabled="${dimInert ? 'true' : 'false'}"
               >
-                <span class="text-xl">${button.icon}</span>
+                <span class="text-xl">${icon}</span>
 
                 ${
                   button.badge
@@ -407,8 +439,8 @@ export class MobileActionBar extends LitElement {
                     : ''
                 }
               </button>
-            `
-            )}
+            `;
+            })}
 
             <!-- Expand/Collapse Toggle -->
             <button

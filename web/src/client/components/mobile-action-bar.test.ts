@@ -91,6 +91,54 @@ describe('MobileActionBar', () => {
     expect(onShowKeyboard).not.toHaveBeenCalled();
   });
 
+  function getLockButton(): HTMLButtonElement {
+    const button = element.querySelector('#mobile-action-keyboard-lock');
+    expect(button).toBeTruthy();
+    return button as HTMLButtonElement;
+  }
+
+  it('shows the lock button unlocked by default', () => {
+    const button = getLockButton();
+    expect(button.getAttribute('aria-label')).toBe('Lock Keyboard');
+  });
+
+  it('shows the lock button locked and dims the keyboard button when keyboardLocked is true', async () => {
+    element.keyboardLocked = true;
+    await element.updateComplete;
+
+    const lockButton = getLockButton();
+    expect(lockButton.getAttribute('aria-label')).toBe('Unlock Keyboard');
+
+    const keyboardButton = getKeyboardButton();
+    expect(keyboardButton.className).toContain('opacity-40');
+    expect(keyboardButton.getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('toggles the keyboard lock via the lock button', () => {
+    const onToggleKeyboardLock = vi.fn();
+    element.callbacks = {
+      onShowKeyboard,
+      onToggleKeyboardLock,
+    } as unknown as MobileActionBarCallbacks;
+    const button = getLockButton();
+
+    dispatchPointer(button, 'pointerdown', { clientX: 100, clientY: 100 });
+    dispatchPointer(button, 'pointerup', { clientX: 100, clientY: 100 });
+
+    expect(onToggleKeyboardLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire onShowKeyboard when the keyboard button is tapped while locked', async () => {
+    element.keyboardLocked = true;
+    await element.updateComplete;
+    const button = getKeyboardButton();
+
+    dispatchPointer(button, 'pointerdown', { clientX: 100, clientY: 100 });
+    dispatchPointer(button, 'pointerup', { clientX: 100, clientY: 100 });
+
+    expect(onShowKeyboard).not.toHaveBeenCalled();
+  });
+
   it('applies the hidden classes while a scroll gesture is active', async () => {
     element.hidden = true;
     await element.updateComplete;

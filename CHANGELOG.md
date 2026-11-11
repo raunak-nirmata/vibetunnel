@@ -2,6 +2,10 @@
 
 ## [1.0.0-beta.19] - Unreleased
 
+### Added
+
+- Added a keyboard lock to the mobile action bar: once locked, no code path raises the iOS soft keyboard until you unlock it again, and the lock persists across reloads.
+
 ### Fixed
 
 - Stopped a scroll that starts on the mobile action bar from firing the button it started on, which could raise the on-screen keyboard mid-scroll.

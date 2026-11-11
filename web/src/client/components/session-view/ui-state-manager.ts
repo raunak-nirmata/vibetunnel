@@ -26,6 +26,8 @@ export interface UIState {
   showQuickKeys: boolean;
   useDirectKeyboard: boolean;
   keyboardHeight: number;
+  // True when the user has locked the keyboard; no code path may raise it while locked
+  keyboardLocked: boolean;
 
   // Touch tracking
   touchStartX: number;
@@ -82,6 +84,7 @@ export class UIStateManager {
     showQuickKeys: false,
     useDirectKeyboard: true,
     keyboardHeight: 0,
+    keyboardLocked: false,
 
     // Touch tracking
     touchStartX: 0,
@@ -287,12 +290,15 @@ export class UIStateManager {
       if (stored) {
         const preferences = JSON.parse(stored);
         this.state.useDirectKeyboard = preferences.useDirectKeyboard ?? true; // Default to true
+        this.state.keyboardLocked = preferences.keyboardLocked ?? false;
       } else {
         this.state.useDirectKeyboard = true; // Default to true when no settings exist
+        this.state.keyboardLocked = false;
       }
     } catch (error) {
       logger.error('Failed to load app preferences', error);
       this.state.useDirectKeyboard = true; // Default to true on error
+      this.state.keyboardLocked = false;
     }
   }
 
@@ -306,6 +312,24 @@ export class UIStateManager {
       localStorage.setItem(
         'vibetunnel_app_preferences',
         JSON.stringify({ ...preferences, useDirectKeyboard: this.state.useDirectKeyboard })
+      );
+    } catch (error) {
+      logger.warn('Failed to save app preferences', error);
+    }
+
+    this.callbacks?.requestUpdate();
+  }
+
+  // Keyboard lock: persists across reloads; unlocking never reopens the keyboard
+  setKeyboardLocked(locked: boolean): void {
+    this.state.keyboardLocked = locked;
+
+    try {
+      const stored = localStorage.getItem('vibetunnel_app_preferences');
+      const preferences = stored ? JSON.parse(stored) : {};
+      localStorage.setItem(
+        'vibetunnel_app_preferences',
+        JSON.stringify({ ...preferences, keyboardLocked: locked })
       );
     } catch (error) {
       logger.warn('Failed to save app preferences', error);

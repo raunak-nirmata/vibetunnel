@@ -209,6 +209,8 @@ describe('DirectKeyboardManager', () => {
   });
 
   describe('focus gate', () => {
+    let keyboardLocked = false;
+
     const setKeyboardHeight = (height: number) => {
       const callbacks: Partial<DirectKeyboardCallbacks> = {
         getShowCtrlAlpha: () => false,
@@ -221,9 +223,14 @@ describe('DirectKeyboardManager', () => {
         toggleCtrlAlpha: () => {},
         clearCtrlSequence: () => {},
         getChatMode: () => false,
+        getKeyboardLocked: () => keyboardLocked,
       };
       manager.setCallbacks(callbacks as DirectKeyboardCallbacks);
     };
+
+    beforeEach(() => {
+      keyboardLocked = false;
+    });
 
     // Always-granted reasons never consult keyboardMode or keyboard height.
     it.each<FocusReason>([
@@ -291,6 +298,93 @@ describe('DirectKeyboardManager', () => {
 
       expect(getManagerState().requestHiddenInputFocus(reason)).toBe(true);
       expect(getManagerState().keyboardMode).toBe(true);
+    });
+
+    it.each<FocusReason>([
+      'keyboard-button',
+      'quick-key',
+      'ctrl-sequence',
+      'paste',
+      'retention',
+      'blur-recover',
+      'terminal-tap',
+    ])('denies %s when locked, regardless of keyboard mode', (reason) => {
+      setKeyboardHeight(300);
+      keyboardLocked = true;
+      getManagerState().keyboardMode = true;
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(false);
+    });
+  });
+
+  describe('keyboard lock', () => {
+    const lockCallbacks = (locked: boolean): Partial<DirectKeyboardCallbacks> => ({
+      getShowCtrlAlpha: () => false,
+      getDisableFocusManagement: () => false,
+      getVisualViewportHandler: () => null,
+      getKeyboardHeight: () => 0,
+      getShowMobileInput: () => false,
+      setKeyboardHeight: () => {},
+      updateShowQuickKeys: () => {},
+      toggleCtrlAlpha: () => {},
+      clearCtrlSequence: () => {},
+      getChatMode: () => false,
+      getKeyboardLocked: () => locked,
+    });
+
+    it('focusHiddenInput is a no-op when locked', () => {
+      manager.setCallbacks(lockCallbacks(true) as DirectKeyboardCallbacks);
+
+      manager.focusHiddenInput(true);
+
+      expect(getManagerState().keyboardMode).toBe(false);
+    });
+
+    it('ensureHiddenInputVisible does not focus or show quick keys when locked', () => {
+      manager.setCallbacks(lockCallbacks(true) as DirectKeyboardCallbacks);
+      getManagerState().keyboardMode = true;
+
+      const hiddenInput = getManagerState().hiddenInput;
+      const focusSpy = hiddenInput ? vi.spyOn(hiddenInput, 'focus') : null;
+
+      manager.ensureHiddenInputVisible();
+
+      expect(focusSpy).not.toHaveBeenCalled();
+      expect(manager.getShowQuickKeys()).toBe(false);
+    });
+
+    it('createHiddenInput sets inputmode="none" when locked, "text" when unlocked', () => {
+      // ensureHiddenInputVisible(forceRecreate) is the direct path that destroys and
+      // rebuilds the input; it runs the creation step before its own lock early-return,
+      // so a recreate that happens to land while locked still comes out inert.
+      manager.setCallbacks(lockCallbacks(true) as DirectKeyboardCallbacks);
+      manager.ensureHiddenInputVisible(true);
+      expect(getManagerState().hiddenInput?.getAttribute('inputmode')).toBe('none');
+
+      manager.setCallbacks(lockCallbacks(false) as DirectKeyboardCallbacks);
+      manager.ensureHiddenInputVisible(true);
+      expect(getManagerState().hiddenInput?.getAttribute('inputmode')).toBe('text');
+    });
+
+    it('setKeyboardLocked(true) blurs the input and sets inputmode="none"', () => {
+      manager.setCallbacks(lockCallbacks(false) as DirectKeyboardCallbacks);
+      getManagerState().keyboardMode = true;
+
+      manager.setKeyboardLocked(true);
+
+      expect(getManagerState().keyboardMode).toBe(false);
+      expect(getManagerState().hiddenInput?.getAttribute('inputmode')).toBe('none');
+    });
+
+    it('setKeyboardLocked(false) flips inputmode back without focusing', () => {
+      manager.setCallbacks(lockCallbacks(false) as DirectKeyboardCallbacks);
+      const hiddenInput = getManagerState().hiddenInput;
+      const focusSpy = hiddenInput ? vi.spyOn(hiddenInput, 'focus') : null;
+
+      manager.setKeyboardLocked(true);
+      manager.setKeyboardLocked(false);
+
+      expect(getManagerState().hiddenInput?.getAttribute('inputmode')).toBe('text');
+      expect(focusSpy).not.toHaveBeenCalled();
     });
   });
 });

@@ -81,6 +81,7 @@ export interface DirectKeyboardCallbacks {
   toggleCtrlAlpha(): void;
   clearCtrlSequence(): void;
   getChatMode(): boolean;
+  getKeyboardLocked(): boolean;
 }
 
 export class DirectKeyboardManager extends ManagerEventEmitter {
@@ -165,6 +166,11 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
   }
 
   focusHiddenInput(forceRecreate = false, reason: FocusReason = 'keyboard-button'): void {
+    if (this.callbacks?.getKeyboardLocked()) {
+      logger.log(`focusHiddenInput ${reason} denied locked`);
+      return;
+    }
+
     logger.log('Entering keyboard mode');
 
     // Enter keyboard mode
@@ -254,6 +260,13 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
    * iOS keyboard dismiss stays dismissed instead of being refocused mid-gesture.
    */
   private requestHiddenInputFocus(reason: FocusReason): boolean {
+    // Short-circuits before isFocusGranted, so the retention/blur-recover "user dismissed
+    // it" side effect (exiting keyboardMode, stopping retention) doesn't run here — that's
+    // fine, setKeyboardLocked(true) already did both via blurHiddenInput().
+    if (this.callbacks?.getKeyboardLocked()) {
+      logger.log(`focus-gate ${reason} denied locked`);
+      return false;
+    }
     const granted = this.isFocusGranted(reason);
     logger.log(`focus-gate ${reason} ${granted ? 'granted' : 'denied'}`);
     if (granted) {
@@ -319,6 +332,12 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       }
     }
 
+    // Locked: the input stays present (inputmode="none" keeps it inert), but nothing
+    // past this point may enter keyboard mode, show quick keys, or call focus().
+    if (this.callbacks?.getKeyboardLocked()) {
+      return;
+    }
+
     // Show quick keys immediately when entering keyboard mode
     // Don't wait for keyboard to appear - this provides immediate visual feedback
     // Skip if in chat mode (chat has its own input)
@@ -377,7 +396,13 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     this.hiddenInput.setAttribute('data-ms-editor', 'false'); // Disable Microsoft Editor
     this.hiddenInput.setAttribute('data-smartpunctuation', 'false'); // Disable smart quotes/dashes
     this.hiddenInput.setAttribute('data-form-type', 'other'); // Hint this isn't a form field
-    this.hiddenInput.setAttribute('inputmode', 'text'); // Allow keyboard but disable optimizations
+    // inputmode="none" suppresses the iOS soft keyboard on focus without blocking hardware
+    // keyboard input (unlike readonly, which blocks both); forceRecreate destroys and
+    // rebuilds this input, so the lock must be re-read here, not just applied once.
+    this.hiddenInput.setAttribute(
+      'inputmode',
+      this.callbacks?.getKeyboardLocked() ? 'none' : 'text'
+    );
     this.hiddenInput.setAttribute('enterkeyhint', 'done'); // Prevent iOS enter key behavior
     this.hiddenInput.setAttribute('aria-hidden', 'true');
 
@@ -1138,6 +1163,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
    * Blur the hidden input to release keyboard focus (used when entering chat mode)
    * This completely disables the keyboard capture to allow other inputs to receive focus
    */
+  // Exits keyboard mode and blurs the input; used for chat mode, scroll gestures, and locking.
   blurHiddenInput(): void {
     // Exit keyboard mode completely
     this.keyboardMode = false;
@@ -1177,7 +1203,16 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       this.callbacks.setKeyboardHeight(0);
     }
 
-    logger.log('Hidden input blurred for chat mode');
+    logger.log('Hidden input blurred');
+  }
+
+  // Applies the lock: blurs and exits keyboard mode (unlock does not refocus), and flips
+  // inputmode on the live input so iOS won't raise the soft keyboard on any stray focus.
+  setKeyboardLocked(locked: boolean): void {
+    if (locked) {
+      this.blurHiddenInput();
+    }
+    this.hiddenInput?.setAttribute('inputmode', locked ? 'none' : 'text');
   }
 
   isRecentlyEnteredKeyboardMode(): boolean {
