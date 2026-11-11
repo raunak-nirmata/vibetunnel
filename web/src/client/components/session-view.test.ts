@@ -744,6 +744,20 @@ describe('SessionView', () => {
       expect(testElement.directKeyboardManager.getKeyboardMode()).toBe(true);
     });
 
+    it('should blur the hidden input on scroll even when direct keyboard mode is off', async () => {
+      const testElement = element as SessionViewTestInterface;
+      testElement.uiStateManager.toggleDirectKeyboard();
+      expect(testElement.uiStateManager.getState().useDirectKeyboard).toBe(false);
+      await element.updateComplete;
+
+      const blurSpy = vi.spyOn(testElement.directKeyboardManager, 'blurHiddenInput');
+      testElement.handleTerminalScrollGesture(
+        new CustomEvent('terminal-scroll-gesture', { detail: { active: true } })
+      );
+
+      expect(blurSpy).toHaveBeenCalled();
+    });
+
     it('should not blur the hidden input on desktop when a scroll gesture starts', async () => {
       const testElement = element as SessionViewTestInterface;
       testElement.uiStateManager.setIsMobile(false);

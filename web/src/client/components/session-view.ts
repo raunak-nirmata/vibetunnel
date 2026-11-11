@@ -846,9 +846,11 @@ export class SessionView extends LitElement {
     this.uiStateManager.setScrollGestureActive(event.detail.active);
 
     // A scroll start must drop keyboard focus: iOS hides the soft keyboard during a
-    // touch-scroll but restores it on release if the hidden input is still focused.
+    // touch-scroll but restores it on release if any input is still focused. Not gated
+    // on useDirectKeyboard: the hidden input can hold focus from an earlier interaction
+    // regardless of the current mode.
     const state = this.uiStateManager.getState();
-    if (event.detail.active && state.isMobile && state.useDirectKeyboard) {
+    if (event.detail.active && state.isMobile) {
       this.directKeyboardManager.blurHiddenInput();
     }
   }
@@ -1542,6 +1544,7 @@ export class SessionView extends LitElement {
                   .terminalTheme=${uiState.terminalTheme}
                   .disableClick=${uiState.isMobile && uiState.useDirectKeyboard}
                   .hideScrollButton=${uiState.showQuickKeys}
+                  .keyboardLocked=${uiState.keyboardLocked}
                   .isMobile=${uiState.isMobile}
                   .showQuickKeys=${uiState.showQuickKeys}
                   .onTerminalClick=${this.boundHandleTerminalClick}

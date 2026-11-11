@@ -35,6 +35,7 @@ export class TerminalRenderer extends LitElement {
   @property({ type: Boolean }) hideScrollButton = false;
   @property({ type: Boolean }) isMobile = false;
   @property({ type: Boolean }) showQuickKeys = false;
+  @property({ type: Boolean }) keyboardLocked = false;
 
   // Event handlers passed as properties
   @property({ type: Object }) onTerminalClick?: (e: Event) => void;
@@ -61,6 +62,7 @@ export class TerminalRenderer extends LitElement {
         .initialRows=${this.session.initialRows || 0}
         .disableClick=${this.disableClick}
         .hideScrollButton=${this.hideScrollButton}
+        .keyboardLocked=${this.keyboardLocked}
         class="w-full h-full p-0 m-0 terminal-container"
         @click=${(e: Event) => this.handleClick(e)}
         @terminal-tap=${(e: Event) => this.handleClick(e)}

@@ -789,6 +789,99 @@ describe('Terminal', () => {
     });
   });
 
+  describe('keyboard suppression on scroll and lock', () => {
+    function startScroll() {
+      const container = element.querySelector('.terminal-container') as HTMLElement;
+      const touchStart = new Event('touchstart', { bubbles: true, cancelable: true });
+      Object.defineProperty(touchStart, 'touches', { value: [{ clientX: 50, clientY: 200 }] });
+      container.dispatchEvent(touchStart);
+
+      const touchMove = new Event('touchmove', { bubbles: true, cancelable: true });
+      Object.defineProperty(touchMove, 'touches', { value: [{ clientX: 50, clientY: 240 }] });
+      container.dispatchEvent(touchMove);
+    }
+
+    it('blurs a focused paste input when a scroll gesture starts', async () => {
+      await element.firstUpdated();
+      const pasteInput = element.querySelector(
+        '.terminal-paste-input'
+      ) as HTMLTextAreaElement | null;
+      pasteInput?.focus();
+      expect(document.activeElement).toBe(pasteInput);
+
+      startScroll();
+
+      expect(document.activeElement).not.toBe(pasteInput);
+    });
+
+    it('blurs the paste input on scroll even when disableClick is true (direct keyboard on)', async () => {
+      element.disableClick = true;
+      await element.updateComplete;
+      await element.firstUpdated();
+      const pasteInput = element.querySelector(
+        '.terminal-paste-input'
+      ) as HTMLTextAreaElement | null;
+      pasteInput?.focus();
+      expect(document.activeElement).toBe(pasteInput);
+
+      startScroll();
+
+      expect(document.activeElement).not.toBe(pasteInput);
+    });
+
+    it('sets inputmode=none on the paste input while the keyboard lock is on', async () => {
+      element.keyboardLocked = true;
+      await element.updateComplete;
+      const pasteInput = element.querySelector('.terminal-paste-input') as HTMLTextAreaElement;
+      expect(pasteInput.getAttribute('inputmode')).toBe('none');
+
+      element.keyboardLocked = false;
+      await element.updateComplete;
+      expect(pasteInput.getAttribute('inputmode')).toBe('text');
+    });
+
+    it('blurs the paste input when the keyboard lock engages', async () => {
+      await element.firstUpdated();
+      const pasteInput = element.querySelector(
+        '.terminal-paste-input'
+      ) as HTMLTextAreaElement | null;
+      pasteInput?.focus();
+      expect(document.activeElement).toBe(pasteInput);
+
+      element.keyboardLocked = true;
+      await element.updateComplete;
+
+      expect(document.activeElement).not.toBe(pasteInput);
+    });
+
+    it('blurs any focused text entry inside the terminal, not just the paste textarea', async () => {
+      await element.firstUpdated();
+      const stray = document.createElement('textarea');
+      stray.className = 'some-other-input';
+      element.appendChild(stray);
+      stray.focus();
+      expect(document.activeElement).toBe(stray);
+
+      startScroll();
+
+      expect(document.activeElement).not.toBe(stray);
+      stray.remove();
+    });
+
+    it('leaves a focused input outside the terminal (e.g. a modal) alone', async () => {
+      await element.firstUpdated();
+      const modalInput = document.createElement('input');
+      document.body.appendChild(modalInput);
+      modalInput.focus();
+      expect(document.activeElement).toBe(modalInput);
+
+      startScroll();
+
+      expect(document.activeElement).toBe(modalInput);
+      modalInput.remove();
+    });
+  });
+
   describe('tap vs scroll', () => {
     const container = () => element.querySelector('.terminal-container') as HTMLElement;
 

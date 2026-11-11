@@ -54,6 +54,7 @@ export class Terminal extends LitElement {
   @property({ type: String }) theme: TerminalThemeId = 'auto';
   @property({ type: Boolean }) disableClick = false;
   @property({ type: Boolean }) hideScrollButton = false;
+  @property({ type: Boolean }) keyboardLocked = false;
   @property({ type: Number }) initialCols = 0;
   @property({ type: Number }) initialRows = 0;
 
@@ -152,6 +153,12 @@ export class Terminal extends LitElement {
 
     if (changed.has('theme')) {
       this.applyTheme();
+    }
+
+    // Engaging the lock must retract an already-open keyboard, not just prevent future ones:
+    // flipping inputmode on a focused element doesn't dismiss iOS's current soft keyboard.
+    if (changed.has('keyboardLocked') && this.keyboardLocked) {
+      this.pasteInput?.blur();
     }
   }
 
@@ -323,6 +330,9 @@ export class Terminal extends LitElement {
     if (!this.touchScrolling) {
       if (Math.abs(totalY) <= 6 || Math.abs(totalY) <= Math.abs(totalX)) return;
       this.touchScrolling = true;
+      // Unconditional: a scroll must drop keyboard focus regardless of input mode,
+      // otherwise iOS restores the keyboard on touchend from whatever stayed focused.
+      this.blurFocusedInput();
       this.dispatchScrollGestureEvent(true);
     }
 
@@ -350,6 +360,38 @@ export class Terminal extends LitElement {
     this.touchScrolling = false;
     this.touchScrollRemainder = 0;
   };
+
+  /**
+   * Drops focus from whatever text entry currently holds it when a scroll gesture starts.
+   * Deliberately doesn't target a specific element (e.g. the paste textarea): five earlier
+   * fixes each guessed which input was holding focus and guessed wrong. Instead this blurs
+   * any focused input/textarea/contenteditable, scoped to the terminal area so a rename
+   * field, file-browser filter, or modal input elsewhere on the page is never touched.
+   */
+  private blurFocusedInput() {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement)) return;
+
+    const isTextEntry =
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active.isContentEditable;
+    if (!isTextEntry) return;
+
+    // Scope to the terminal area (falling back to this component's own subtree, e.g. in
+    // tests that don't render the surrounding session-view chrome) so overlays/modals,
+    // which render as siblings of .terminal-area, are never in scope.
+    const terminalArea = this.closest('.terminal-area');
+    const inScope = terminalArea ? terminalArea.contains(active) : this.contains(active);
+    if (!inScope) return;
+
+    logger.log('blurring focused text entry on scroll gesture', {
+      tag: active.tagName,
+      id: active.id || undefined,
+      className: active.className || undefined,
+    });
+    active.blur();
+  }
 
   /** Lets the mobile action bar fade out of the way while the user is actively scrolling. */
   private dispatchScrollGestureEvent(active: boolean) {
@@ -810,6 +852,7 @@ export class Terminal extends LitElement {
           autocomplete="off"
           autocorrect="off"
           spellcheck="false"
+          inputmode=${this.keyboardLocked ? 'none' : 'text'}
           @paste=${this.handlePaste}
         ></textarea>
         <div
