@@ -34,6 +34,28 @@ import { ManagerEventEmitter } from './interfaces.js';
 
 const logger = createLogger('direct-keyboard-manager');
 
+// Mirrors lifecycle-event-manager.ts's KEYBOARD_VISIBLE_THRESHOLD: below this, the
+// visualViewport height drop is noise, not a real soft keyboard.
+const KEYBOARD_VISIBLE_THRESHOLD = 50;
+// A quick key can cause a momentary visualViewport dip before iOS reports the keyboard
+// height again; don't treat that as a dismiss.
+const QUICK_KEY_FOCUS_GRACE_MS = 300;
+
+/**
+ * Why a caller wants the hidden input focused. `requestHiddenInputFocus` is the only
+ * place allowed to call `hiddenInput.focus()`, and it uses the reason to decide whether
+ * the focus is actually granted — this is what stops scrolling and auto re-focus from
+ * reopening the iOS keyboard the user just dismissed.
+ */
+export type FocusReason =
+  | 'keyboard-button'
+  | 'quick-key'
+  | 'ctrl-sequence'
+  | 'paste'
+  | 'retention'
+  | 'blur-recover'
+  | 'terminal-tap';
+
 const HARDWARE_SPECIAL_KEYS: Readonly<Record<string, string>> = {
   Enter: 'enter',
   Escape: 'escape',
@@ -92,6 +114,8 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
   private keyboardModeTimestamp = 0;
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Used for IME composition
   private compositionBuffer = '';
+  // Last time a quick key was pressed; used by the focus gate's dismiss grace window.
+  private lastQuickKeyTimestamp = 0;
 
   constructor(instanceId: string) {
     super();
@@ -140,7 +164,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     }
   }
 
-  focusHiddenInput(forceRecreate = false): void {
+  focusHiddenInput(forceRecreate = false, reason: FocusReason = 'keyboard-button'): void {
     logger.log('Entering keyboard mode');
 
     // Enter keyboard mode
@@ -207,7 +231,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     }
 
     // Ensure input is ready and focus it synchronously (recreated when forceRecreate).
-    this.ensureHiddenInputVisible(forceRecreate);
+    this.ensureHiddenInputVisible(forceRecreate, reason);
 
     // Restart focus retention after the keyboard has had time to appear, so it doesn't
     // steal the moment iOS uses to show the keyboard.
@@ -224,7 +248,54 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     }
   }
 
-  ensureHiddenInputVisible(forceRecreate = false): void {
+  /**
+   * The only place allowed to call `hiddenInput.focus()`. Logs the decision so a device
+   * test can see which route fired, and gates the "fight the dismiss" reasons so a real
+   * iOS keyboard dismiss stays dismissed instead of being refocused mid-gesture.
+   */
+  private requestHiddenInputFocus(reason: FocusReason): boolean {
+    const granted = this.isFocusGranted(reason);
+    logger.log(`focus-gate ${reason} ${granted ? 'granted' : 'denied'}`);
+    if (granted) {
+      this.hiddenInput?.focus();
+    }
+    return granted;
+  }
+
+  private isFocusGranted(reason: FocusReason): boolean {
+    switch (reason) {
+      case 'keyboard-button':
+      case 'quick-key':
+      case 'ctrl-sequence':
+      case 'paste':
+        return true;
+      case 'terminal-tap':
+        // Round 1: a terminal tap focuses the host element for hardware keyboards.
+        // It must never raise the soft keyboard.
+        return false;
+      case 'retention':
+      case 'blur-recover': {
+        if (!this.keyboardMode) return false;
+
+        const keyboardHeight = this.callbacks?.getKeyboardHeight() ?? 0;
+        if (keyboardHeight > KEYBOARD_VISIBLE_THRESHOLD) return true;
+
+        const sinceQuickKey = Date.now() - this.lastQuickKeyTimestamp;
+        if (sinceQuickKey < QUICK_KEY_FOCUS_GRACE_MS) return true;
+
+        // The keyboard is gone and nothing we did explains it: the user dismissed it.
+        // Honor that instead of fighting it — exit keyboard mode and stop retrying.
+        this.keyboardMode = false;
+        if (this.focusRetentionInterval) {
+          clearInterval(this.focusRetentionInterval);
+          this.focusRetentionInterval = null;
+        }
+        return false;
+      }
+    }
+  }
+
+  ensureHiddenInputVisible(forceRecreate = false, reason: FocusReason = 'keyboard-button'): void {
     // iOS won't reopen the soft keyboard on a plain focus() of an input it considers
     // already focused — and our own blur-handler re-focuses the input ~50ms after the
     // keyboard is dismissed while the quick keys stay open. That race made the TAP
@@ -268,7 +339,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       // Focus synchronously - critical for iOS Safari. (When the keyboard needed
       // reopening with focus retained, the input was already recreated above, so a
       // plain focus() on the fresh field now reliably shows the keyboard.)
-      this.hiddenInput.focus();
+      this.requestHiddenInputFocus(reason);
 
       // Set a space placeholder and position cursor at end
       // This helps iOS recognize that we want to show the keyboard
@@ -483,7 +554,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       } else if (!this.callbacks?.getChatMode()) {
         // Only show quick keys if keyboard is actually visible (skip in chat mode)
         const keyboardHeight = this.callbacks?.getKeyboardHeight() ?? 0;
-        if (keyboardHeight > 50) {
+        if (keyboardHeight > KEYBOARD_VISIBLE_THRESHOLD) {
           this.showQuickKeys = true;
           if (this.callbacks) {
             this.callbacks.updateShowQuickKeys(true);
@@ -512,28 +583,26 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
         `Active element: ${document.activeElement?.tagName}, class: ${document.activeElement?.className}`
       );
 
-      // If we're in keyboard mode, ALWAYS try to maintain focus
-      // Only the Done button should exit keyboard mode
+      // If we're in keyboard mode, try to maintain focus — but requestHiddenInputFocus's
+      // gate decides: a real iOS keyboard dismiss exits keyboard mode instead of being
+      // fought (the Done button already does this synchronously via dismissKeyboard()).
       if (this.keyboardMode) {
         logger.log('In keyboard mode - maintaining focus');
 
         // Add a small delay to allow Done button to exit keyboard mode first
         setTimeout(() => {
-          // Re-check keyboard mode after delay - Done button might have exited it.
           // Skip while reopening via TAP so this doesn't re-focus the stale input and
           // make iOS refuse to show the keyboard.
           if (
-            this.keyboardMode &&
             !this.reopeningKeyboard &&
             this.hiddenInput &&
             document.activeElement !== this.hiddenInput
           ) {
-            logger.log('Refocusing hidden input to maintain keyboard');
-            this.hiddenInput.focus();
+            this.requestHiddenInputFocus('blur-recover');
           }
         }, 50); // 50ms delay to allow Done button processing
 
-        // Don't exit keyboard mode or hide quick keys
+        // Don't exit keyboard mode or hide quick keys here — the gate does it if denied.
         return;
       }
 
@@ -581,6 +650,10 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     logger.log(
       `[handleQuickKeyPress] Called with key: ${key}, isModifier: ${isModifier}, isSpecial: ${isSpecial}`
     );
+
+    // Feeds the focus gate's dismiss-vs-quick-key grace window (a quick key press can
+    // cause a momentary visualViewport dip before iOS reports the keyboard height again).
+    this.lastQuickKeyTimestamp = Date.now();
 
     if (!this.inputManager) {
       logger.error('No input manager found');
@@ -758,7 +831,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     requestAnimationFrame(() => {
       const disableFocusManagement = this.callbacks?.getDisableFocusManagement() ?? false;
       if (!disableFocusManagement && this.hiddenInput && this.showQuickKeys) {
-        this.hiddenInput.focus();
+        this.requestHiddenInputFocus('quick-key');
       }
     });
   };
@@ -779,10 +852,10 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
         return;
       }
 
-      // In keyboard mode, always maintain focus regardless of other conditions
+      // In keyboard mode, always try to maintain focus — the gate decides whether a
+      // real iOS dismiss should be honored instead of fought.
       if (this.keyboardMode && this.hiddenInput && document.activeElement !== this.hiddenInput) {
-        logger.log('Keyboard mode: forcing focus on hidden input');
-        this.hiddenInput.focus();
+        this.requestHiddenInputFocus('retention');
         return;
       }
 
@@ -794,8 +867,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
         document.activeElement !== this.hiddenInput &&
         !showCtrlAlpha
       ) {
-        logger.log('Refocusing hidden input to maintain keyboard');
-        this.hiddenInput.focus();
+        this.requestHiddenInputFocus('retention');
       }
     }, 100) as unknown as number; // More frequent checks (100ms instead of 300ms)
   }
@@ -808,11 +880,12 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     this.reopeningKeyboard = false;
   }
 
+  // Used after closing the CtrlFull overlay; see handleQuickKeyPress's 'CtrlFull' branch.
   private delayedRefocusHiddenInput(): void {
     setTimeout(() => {
       const disableFocusManagement = this.callbacks?.getDisableFocusManagement() ?? false;
       if (!disableFocusManagement && this.hiddenInput) {
-        this.hiddenInput.focus();
+        this.requestHiddenInputFocus('ctrl-sequence');
       }
     }, 100);
   }
@@ -822,11 +895,13 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     return !disableFocusManagement && !!this.hiddenInput && this.showQuickKeys;
   }
 
+  // Used after closing the Ctrl+Alpha overlay; see session-view's handleSendCtrlSequence
+  // and handleCtrlAlphaCancel.
   refocusHiddenInput(): void {
     setTimeout(() => {
       const disableFocusManagement = this.callbacks?.getDisableFocusManagement() ?? false;
       if (!disableFocusManagement && this.hiddenInput) {
-        this.hiddenInput.focus();
+        this.requestHiddenInputFocus('ctrl-sequence');
       }
     }, 100);
   }
@@ -942,7 +1017,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     this.hiddenInput.addEventListener('paste', handlePasteEvent);
 
     // Focus and select the now-visible input
-    this.hiddenInput.focus();
+    this.requestHiddenInputFocus('paste');
     this.hiddenInput.select();
 
     logger.log('Input is now visible and focused - long-press to see paste menu');

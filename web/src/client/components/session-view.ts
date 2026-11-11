@@ -831,10 +831,11 @@ export class SessionView extends LitElement {
 
   private handleTerminalReady() {
     logger.log('Terminal ready event received');
-    // Terminal is ready, ensure it's properly initialized
+    // Terminal is ready, ensure it's properly initialized.
+    // Deliberately not focusing anything here: host-element focus on open has no
+    // user-visible benefit on mobile and was one of the routes raising the soft
+    // keyboard; desktop still gets focus through terminal.ts's handleClick.
     this.ensureTerminalInitialized();
-
-    this.scheduleMobileHardwareFocus();
   }
 
   private scheduleMobileHardwareFocus() {

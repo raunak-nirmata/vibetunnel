@@ -72,6 +72,7 @@ interface SessionViewTestInterface extends SessionView {
   };
   getTerminalElement: () => Terminal | null;
   ensureTerminalInitialized: () => void;
+  handleTerminalReady: () => void;
   handleTerminalClick: (event: Event) => void;
   updateTerminalTransform: () => void;
   _updateTerminalTransformTimeout: ReturnType<typeof setTimeout> | null;
@@ -236,7 +237,10 @@ describe('SessionView', () => {
         await mobileElement.updateComplete;
         const terminal = mobileElement.querySelector('vibe-terminal');
         await vi.waitFor(() => expect(terminal?.getAttribute('data-ready')).toBe('true'));
-        await vi.waitFor(() => expect(document.activeElement).toBe(mobileElement));
+        // PR 6 removed the automatic host-element focus on terminal-ready (it was one of
+        // the routes that could raise the soft keyboard); activeElement stays wherever it
+        // was. The terminal container click below is what moves focus to the paste input.
+        expect(document.activeElement).not.toBe(mobileElement);
 
         const terminalContainer = terminal?.querySelector('#terminal-container') as HTMLElement;
         const pasteInput = terminal?.querySelector('.terminal-paste-input') as HTMLTextAreaElement;
@@ -287,6 +291,20 @@ describe('SessionView', () => {
         requestAnimationFrameSpy.mockRestore();
         vi.useRealTimers();
       }
+    });
+
+    it('does not focus anything when the terminal becomes ready', () => {
+      // PR 6: scheduleMobileHardwareFocus() used to run here and was one of the routes
+      // that could raise the soft keyboard on scroll. handleTerminalReady must no longer
+      // touch focus at all.
+      const testElement = element as SessionViewTestInterface;
+      testElement.uiStateManager.setIsMobile(true);
+      const focusSpy = vi.spyOn(element, 'focus');
+
+      testElement.handleTerminalReady();
+
+      expect(focusSpy).not.toHaveBeenCalled();
+      focusSpy.mockRestore();
     });
 
     it('acts on terminal-tap without stopping propagation, so raw touchend still reaches the swipe-back handler', () => {

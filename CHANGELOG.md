@@ -6,6 +6,7 @@
 
 - Stopped a scroll that starts on the mobile action bar from firing the button it started on, which could raise the on-screen keyboard mid-scroll.
 - Shrank the mobile action bar to icon-only buttons, moved it to the bottom-right corner, and faded it out while the terminal is mid-scroll-gesture so it covers less of the terminal.
+- Routed every hidden-input focus request on mobile through one gate, so dismissing the iOS keyboard keeps it dismissed instead of the app refocusing it mid-scroll or mid-dismiss.
 
 ## [1.0.0-beta.18] - 2026-07-11
 

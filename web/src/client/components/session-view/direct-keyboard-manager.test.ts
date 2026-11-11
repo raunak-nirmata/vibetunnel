@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DirectKeyboardCallbacks, FocusReason } from './direct-keyboard-manager';
 import { DirectKeyboardManager } from './direct-keyboard-manager';
 import type { InputManager } from './input-manager';
 
@@ -16,6 +17,9 @@ describe('DirectKeyboardManager', () => {
       focusRetentionInterval: number | null;
       keyboardReopenTimeout: ReturnType<typeof setTimeout> | null;
       reopeningKeyboard: boolean;
+      keyboardMode: boolean;
+      lastQuickKeyTimestamp: number;
+      requestHiddenInputFocus: (reason: FocusReason) => boolean;
     };
 
   beforeEach(() => {
@@ -202,5 +206,91 @@ describe('DirectKeyboardManager', () => {
 
     expect(keyEvent.defaultPrevented).toBe(false);
     expect(mockInputManager.sendInput).not.toHaveBeenCalled();
+  });
+
+  describe('focus gate', () => {
+    const setKeyboardHeight = (height: number) => {
+      const callbacks: Partial<DirectKeyboardCallbacks> = {
+        getShowCtrlAlpha: () => false,
+        getDisableFocusManagement: () => false,
+        getVisualViewportHandler: () => null,
+        getKeyboardHeight: () => height,
+        getShowMobileInput: () => false,
+        setKeyboardHeight: () => {},
+        updateShowQuickKeys: () => {},
+        toggleCtrlAlpha: () => {},
+        clearCtrlSequence: () => {},
+        getChatMode: () => false,
+      };
+      manager.setCallbacks(callbacks as DirectKeyboardCallbacks);
+    };
+
+    // Always-granted reasons never consult keyboardMode or keyboard height.
+    it.each<FocusReason>([
+      'keyboard-button',
+      'quick-key',
+      'ctrl-sequence',
+      'paste',
+    ])('always grants %s regardless of keyboard mode or visibility', (reason) => {
+      setKeyboardHeight(0);
+      getManagerState().keyboardMode = false;
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(true);
+
+      getManagerState().keyboardMode = true;
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(true);
+    });
+
+    it('never grants terminal-tap', () => {
+      setKeyboardHeight(300);
+      getManagerState().keyboardMode = true;
+      expect(getManagerState().requestHiddenInputFocus('terminal-tap')).toBe(false);
+
+      getManagerState().keyboardMode = false;
+      expect(getManagerState().requestHiddenInputFocus('terminal-tap')).toBe(false);
+    });
+
+    it.each<FocusReason>([
+      'retention',
+      'blur-recover',
+    ])('denies %s when keyboard mode is off', (reason) => {
+      setKeyboardHeight(300);
+      getManagerState().keyboardMode = false;
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(false);
+    });
+
+    it.each<FocusReason>([
+      'retention',
+      'blur-recover',
+    ])('grants %s when keyboard mode is on and the keyboard is still visible', (reason) => {
+      setKeyboardHeight(300);
+      getManagerState().keyboardMode = true;
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(true);
+      expect(getManagerState().keyboardMode).toBe(true);
+    });
+
+    it.each<FocusReason>([
+      'retention',
+      'blur-recover',
+    ])('treats %s as a user dismiss when the keyboard is gone and no quick key explains it', (reason) => {
+      setKeyboardHeight(0);
+      getManagerState().keyboardMode = true;
+      getManagerState().lastQuickKeyTimestamp = Date.now() - 1000; // well past the grace window
+
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(false);
+      // Dismiss means dismiss: the gate exits keyboard mode and stops retention.
+      expect(getManagerState().keyboardMode).toBe(false);
+    });
+
+    it.each<FocusReason>([
+      'retention',
+      'blur-recover',
+    ])('grants %s when the keyboard height dip is within the recent quick-key grace window', (reason) => {
+      setKeyboardHeight(0);
+      getManagerState().keyboardMode = true;
+      getManagerState().lastQuickKeyTimestamp = Date.now();
+
+      expect(getManagerState().requestHiddenInputFocus(reason)).toBe(true);
+      expect(getManagerState().keyboardMode).toBe(true);
+    });
   });
 });
