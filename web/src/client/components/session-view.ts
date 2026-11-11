@@ -827,6 +827,13 @@ export class SessionView extends LitElement {
 
   private handleTerminalScrollGesture(event: CustomEvent<{ active: boolean }>) {
     this.uiStateManager.setScrollGestureActive(event.detail.active);
+
+    // A scroll start must drop keyboard focus: iOS hides the soft keyboard during a
+    // touch-scroll but restores it on release if the hidden input is still focused.
+    const state = this.uiStateManager.getState();
+    if (event.detail.active && state.isMobile && state.useDirectKeyboard) {
+      this.directKeyboardManager.blurHiddenInput();
+    }
   }
 
   private handleTerminalReady() {

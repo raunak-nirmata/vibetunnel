@@ -74,8 +74,14 @@ interface SessionViewTestInterface extends SessionView {
   ensureTerminalInitialized: () => void;
   handleTerminalReady: () => void;
   handleTerminalClick: (event: Event) => void;
+  handleTerminalScrollGesture: (event: CustomEvent<{ active: boolean }>) => void;
   updateTerminalTransform: () => void;
   _updateTerminalTransformTimeout: ReturnType<typeof setTimeout> | null;
+  directKeyboardManager: {
+    blurHiddenInput: () => void;
+    focusHiddenInput: (forceRecreate?: boolean, reason?: string) => void;
+    getKeyboardMode: () => boolean;
+  };
 }
 
 // Test interface for Terminal element
@@ -711,6 +717,44 @@ describe('SessionView', () => {
       const keyboardButton = element.querySelector('.mobile-keyboard-button');
       expect(keyboardButton).toBeTruthy();
       expect(keyboardButton?.classList.contains('quick-keys-visible')).toBe(true);
+    });
+
+    it('should blur the hidden input and exit keyboard mode when a scroll gesture starts', async () => {
+      const testElement = element as SessionViewTestInterface;
+      testElement.directKeyboardManager.focusHiddenInput(false, 'keyboard-button');
+      expect(testElement.directKeyboardManager.getKeyboardMode()).toBe(true);
+
+      const blurSpy = vi.spyOn(testElement.directKeyboardManager, 'blurHiddenInput');
+      testElement.handleTerminalScrollGesture(
+        new CustomEvent('terminal-scroll-gesture', { detail: { active: true } })
+      );
+
+      expect(blurSpy).toHaveBeenCalled();
+      expect(testElement.directKeyboardManager.getKeyboardMode()).toBe(false);
+    });
+
+    it('should still grant a keyboard-button focus request after a scroll-triggered blur', async () => {
+      const testElement = element as SessionViewTestInterface;
+      testElement.handleTerminalScrollGesture(
+        new CustomEvent('terminal-scroll-gesture', { detail: { active: true } })
+      );
+      expect(testElement.directKeyboardManager.getKeyboardMode()).toBe(false);
+
+      testElement.directKeyboardManager.focusHiddenInput(false, 'keyboard-button');
+      expect(testElement.directKeyboardManager.getKeyboardMode()).toBe(true);
+    });
+
+    it('should not blur the hidden input on desktop when a scroll gesture starts', async () => {
+      const testElement = element as SessionViewTestInterface;
+      testElement.uiStateManager.setIsMobile(false);
+      await element.updateComplete;
+
+      const blurSpy = vi.spyOn(testElement.directKeyboardManager, 'blurHiddenInput');
+      testElement.handleTerminalScrollGesture(
+        new CustomEvent('terminal-scroll-gesture', { detail: { active: true } })
+      );
+
+      expect(blurSpy).not.toHaveBeenCalled();
     });
   });
 
