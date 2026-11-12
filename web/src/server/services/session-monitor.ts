@@ -17,6 +17,14 @@ const logger = createLogger('session-monitor');
 // Command tracking thresholds
 const MIN_COMMAND_DURATION_MS = 3000; // Minimum duration for command completion notifications
 
+// Matches a complete OSC sequence terminated by BEL or ST (ESC \)
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI/OSC escape sequences require control characters
+const OSC_SEQUENCE_RE = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
+// Safety bound on an unterminated OSC carried across chunks. OSC 52 (clipboard) payloads
+// are base64 and can legitimately run tens of KB (observed up to ~10KB in a real session);
+// this only guards against a sequence that never terminates, not normal clipboard sync.
+const MAX_OSC_CARRY_LENGTH = 64 * 1024;
+
 export interface SessionState {
   id: string;
   name: string;
@@ -43,6 +51,8 @@ export interface CommandFinishedEvent {
 export class SessionMonitor extends EventEmitter {
   private sessions = new Map<string, SessionState>();
   private commandThresholdMs = MIN_COMMAND_DURATION_MS;
+  // Per-session tail of an OSC sequence that didn't terminate within its chunk
+  private oscCarry = new Map<string, string>();
 
   constructor(private ptyManager: PtyManager) {
     super();
@@ -70,14 +80,16 @@ export class SessionMonitor extends EventEmitter {
   }
 
   /**
-   * Track PTY output for bell characters
+   * Track PTY output for bell characters, ignoring BEL/ST used as OSC terminators
    */
   public trackPtyOutput(sessionId: string, data: string) {
     const session = this.sessions.get(sessionId);
     if (!session) return;
 
-    // Detect bell character
-    if (data.includes('\x07')) {
+    const textWithoutOsc = this.stripOscSequences(sessionId, data);
+
+    // Detect a genuine bell outside of any OSC sequence
+    if (textWithoutOsc.includes('\x07')) {
       this.emitNotificationEvent({
         type: 'bell',
         sessionId,
@@ -85,6 +97,37 @@ export class SessionMonitor extends EventEmitter {
         timestamp: new Date().toISOString(),
       });
     }
+  }
+
+  /**
+   * Remove complete OSC sequences (BEL- or ST-terminated) from a chunk, carrying
+   * an unterminated trailing OSC over to the next chunk so a split sequence's
+   * terminator can't be mistaken for a bell.
+   */
+  private stripOscSequences(sessionId: string, chunk: string): string {
+    const combined = (this.oscCarry.get(sessionId) ?? '') + chunk;
+    let text = combined.replace(OSC_SEQUENCE_RE, '');
+
+    let carry = '';
+    const lastOscStart = text.lastIndexOf('\x1b]');
+    if (lastOscStart !== -1) {
+      // No terminator was found after this point (the regex above already
+      // removed every complete sequence), so it's an in-progress OSC.
+      carry = text.slice(lastOscStart);
+      text = text.slice(0, lastOscStart);
+    } else if (text.endsWith('\x1b')) {
+      // A trailing bare ESC could be the start of a split "ESC ]" or "ESC \"
+      carry = '\x1b';
+      text = text.slice(0, -1);
+    }
+
+    if (carry.length > MAX_OSC_CARRY_LENGTH) {
+      // Not OSC 9;4 (or anything else we care about) - drop it rather than grow forever
+      carry = '';
+    }
+    this.oscCarry.set(sessionId, carry);
+
+    return text;
   }
 
   /**
@@ -225,6 +268,7 @@ export class SessionMonitor extends EventEmitter {
     // Remove session after a delay to allow final events to process
     setTimeout(() => {
       this.sessions.delete(sessionId);
+      this.oscCarry.delete(sessionId);
     }, 5000);
   }
 

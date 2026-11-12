@@ -12,6 +12,7 @@ import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { WebSocketServer } from 'ws';
 import { ServerEventType } from '../shared/types.js';
+import type { NotificationPreferences } from '../types/config.js';
 import { apiSocketServer } from './api-socket-server.js';
 import type { AuthenticatedRequest } from './middleware/auth.js';
 import { createAuthMiddleware } from './middleware/auth.js';
@@ -89,6 +90,17 @@ interface GlobalTunnelState {
 const globalTunnelState = global as typeof global & GlobalTunnelState;
 
 const logger = createLogger('server');
+
+// Which notification preference gates each server event's push notification
+const NOTIFICATION_PREFERENCE_BY_EVENT_TYPE: Partial<
+  Record<ServerEventType, keyof NotificationPreferences>
+> = {
+  [ServerEventType.SessionStart]: 'sessionStart',
+  [ServerEventType.SessionExit]: 'sessionExit',
+  [ServerEventType.CommandFinished]: 'commandCompletion',
+  [ServerEventType.CommandError]: 'commandError',
+  [ServerEventType.Bell]: 'bell',
+};
 
 // Global shutdown state management
 let shuttingDown = false;
@@ -677,6 +689,13 @@ export async function createApp(): Promise<AppInstance> {
     // Listen for session monitor notifications and send push notifications
     sessionMonitor.on('notification', async (event) => {
       try {
+        // Respect the user's notification preferences before pushing anything
+        const notificationPrefs = configService.getNotificationPreferences();
+        const preferenceKey = NOTIFICATION_PREFERENCE_BY_EVENT_TYPE[event.type as ServerEventType];
+        if (!notificationPrefs.enabled || (preferenceKey && !notificationPrefs[preferenceKey])) {
+          return;
+        }
+
         // Map event types to push notification data
         let pushPayload = null;
 

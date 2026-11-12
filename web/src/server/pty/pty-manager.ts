@@ -134,7 +134,6 @@ export class PtyManager extends EventEmitter {
   >();
   private static initialized = false;
   private sessionEventListeners = new Map<string, Set<(...args: unknown[]) => void>>();
-  private sessionExitTimes = new Map<string, number>(); // Track session exit times to avoid false bells
   private processTreeAnalyzer = new ProcessTreeAnalyzer(); // Process tree analysis for bell source identification
   private sessionMonitor: SessionMonitor | null = null; // Reference to SessionMonitor for notification tracking
 
@@ -690,8 +689,6 @@ export class PtyManager extends EventEmitter {
     // Handle PTY exit
     ptyProcess.onExit(async ({ exitCode, signal }: { exitCode: number; signal?: number }) => {
       try {
-        // Mark session as exiting to prevent false bell notifications
-        this.sessionExitTimes.set(session.id, Date.now());
         // Write exit event to asciinema
         if (asciinemaWriter?.isOpen()) {
           asciinemaWriter.writeRawJson(['exit', exitCode || 0, session.id]);
